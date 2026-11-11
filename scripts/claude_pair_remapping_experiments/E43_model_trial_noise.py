@@ -122,6 +122,24 @@ Parts B / C write to <results>/partB|partC and <outputs>/partB|partC (same file 
 trial files named by sigma), with their own provenance.json (code provenance at the start, under
 "model"), so part A's files are never touched.
 
+The per-presentation jitter (`--presentation-jitter SP`, part B only; off by default; E81 part D's check): part B's draw
+is shared by the 16 odors of a trial. With this option each presentation (KC x odor x trial) also gets a draw of its own,
+zeta, so a trial's threshold for odor j is thr0 * (1 + sigma * xi + SP * zeta_j) (clipped as part B's; with --thr-jitter
+lognormal, thr0 * exp(sigma xi - sigma^2 / 2) * exp(SP zeta_j - SP^2 / 2)): a relative SD of sqrt(sigma^2 + SP^2) per
+presentation, of whose variance a share sigma^2 / (sigma^2 + SP^2) is shared by the odors of the trial. olfsysm's
+threshold is one per KC for all odors of a run, so each trial is assembled from one run per odor (mp.sim_only, the odor
+alone; KCs interact only within an odor, so this is that odor's column of a run of all odors at those thresholds),
+APL on and APL off with the same draws. The shared draws are part B's (the same xi at the same seed), the presentation
+draws a stream of their own (draw kinds 6-8), so SP = 0 through this path is part B's run (asserted when a model is
+built: the single-odor path at sigma = 0 reproduces the deterministic run). The shared level is part B's as now
+(calibrated, --sigma-from, --levels), or given directly with `--shared-sigma S` (level 'given', no calibration; also
+usable without the option). `--workers W` runs the single-odor runs in W processes forked from the one that built the
+model, each with one OpenMP thread (a run of one odor uses one thread). Folders partB_presentation (and
+partB_presentation_lognormal); calibration and trial files named <model>_p<SP>_sigma<sigma>_...; tables as part B's with
+a presentation_sd column. Cost: a run of one odor on one thread takes about a third of a run of all 16 on 12 threads
+(C2 on atlas: 4.4 s against 14 s), so in one process a trial costs about five times part B's; use --workers.
+E81_model_noise.py --part D-presentation drives the same model with per-condition levels.
+
 Models from other experiments' joint fits (`--model-from EXPERIMENT:TAG`, repeatable; E48): the model
 of row TAG of <shared>/results/EXPERIMENT/fits.csv (a fit of E10_joint_fit.py) at its fitted
 parameters, built as ref40 is from E34's row (`fit_model`, which builds ref40 too): bouton_base at the
@@ -181,6 +199,7 @@ Usage: OMP_NUM_THREADS=12 nice -n 10 ./venv/bin/python E43_model_trial_noise.py 
        ... --part C [--sigma-grid 0.1 0.2 0.3 0.45 0.6] (other options as part B)
        ... [--model-from EXPERIMENT:TAG ...] [--models ...] [--experiment NAME] [--levels LABEL ...]
        [--sigma-from MODEL [--sigma-from-dir DIR]] [--zcell [--zcell-q Q] [--zcell-map saturating|linear]]
+       ... --part B --presentation-jitter SP [--shared-sigma S] [--workers 10]
 """
 from __future__ import annotations
 
@@ -189,10 +208,12 @@ import gc
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import re
 import subprocess
 import time
+import warnings
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1330,7 +1351,7 @@ def make_figure(res_dir: Path, ncol: str = 'noise_sd', xlabel: str = 'PN noise s
             a.plot(per[c][ncol], per[c].single_trial_floor, 'D', color=COLORS[c], ms=8, mfc='none', mew=1.5,
                 label=f'{COND_LABEL[c]}, pseudo-recordings')
             a.axhline(first(per[c], 'data_single_trial_floor'), color=COLORS[c], ls=':', lw=1.2, label=f'KCs, {DATA_LABEL[c]}')
-            if m in lv:
+            if m in lv and lv[m]['matched'][c].get('sd') is not None:
                 a.axvline(lv[m]['matched'][c]['sd'], color=COLORS[c], lw=0.8, alpha=0.5)
         a.set_title('same-odor distance between single trials (floor)\n(dotted: KC data; vertical: matched noise)', fontsize=9)
         a.set_ylabel(f'{m}:\n{desc[m]}', fontsize=8)
@@ -1412,7 +1433,7 @@ def make_figure(res_dir: Path, ncol: str = 'noise_sd', xlabel: str = 'PN noise s
 # somatic threshold. C: per-trial gain jitter of each glomerulus x odor ORN input.
 B_KEY = 'sigma'
 MODEL_SEED_IDX = {'base70': 0, 'ref40': 1}
-DRAW_KINDS = {'tune': 0, 'rec': 1, 'check': 2, 'tune_c': 3, 'rec_c': 4, 'check_c': 5}
+DRAW_KINDS = {'tune': 0, 'rec': 1, 'check': 2, 'tune_c': 3, 'rec_c': 4, 'check_c': 5, 'tune_p': 6, 'rec_p': 7, 'check_p': 8}
 THR_NOISE_NOTE = ('Part B: per trial, each KC\'s somatic threshold (rv.kc.thr, compared with Vm at every step; '
     'fixed_thr + 2 * kc.spont_in, as fit_mb_model / make_fixed_param_kc_simulator set it) is replaced by '
     'thr0 * (1 + sigma * xi), xi standard normal per KC and trial, clipped below at thr_min_frac * thr0 (> 0); the same '
@@ -1427,6 +1448,56 @@ GAIN_NOISE_NOTE = ('Part C: per trial, each glomerulus x odor ORN input delta (m
     'on and with APL off on the same input. ORN spontaneous rates and KC thresholds unjittered (rv.kc.thr = fixed_thr + 2 * '
     'spont_in), fixed_thr re-tuned at each sigma as in part B; no PN-rate noise. Draws as part B, with kinds 3 (tuning), 4 '
     '(pseudo-recording rep) and 5 (the sigma = 0 check).')
+PRES_NOISE_NOTE = (' Per-presentation jitter (--presentation-jitter SP): each presentation (KC x odor x trial) also gets a '
+    'draw zeta of its own, the threshold for odor j being thr0 * (1 + sigma * xi + SP * zeta_j), clipped as above (lognormal: '
+    'thr0 * exp(sigma xi - sigma^2 / 2) * exp(SP zeta_j - SP^2 / 2)); each trial is assembled from one KC run per odor (mp.sim_only, '
+    'the odor alone), the same draws APL on and off. xi are the draws above; zeta numpy default_rng(SeedSequence(seed, '
+    'spawn_key=(model index, kind, rep))) with kinds 6 (tuning), 7 (pseudo-recording rep) and 8, trials x odors x KCs.')
+
+
+def b_key(sigma_p=None) -> str:
+    """The noise level's name in part B's calibration and trial file names: 'sigma', or with the per-presentation
+    jitter of SD `sigma_p` 'p<sigma_p>_sigma' (files <model>_p0.1_sigma0.0735_n3.npz)."""
+    return B_KEY if sigma_p is None else f'p{sd_tag(sigma_p)}_{B_KEY}'
+
+
+# the model the forked workers of `start_odor_pool` run (set in the parent just before the fork)
+_POOL_MODEL = None
+
+
+def _openmp_runtime():
+    """olfsysm's OpenMP runtime (found among this process's mapped libraries) as a ctypes library."""
+    import ctypes
+    with open('/proc/self/maps') as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 6 and os.path.basename(parts[5]).startswith(('libgomp.so', 'libomp.so', 'libiomp5.so')):
+                return ctypes.CDLL(parts[5])
+    raise RuntimeError('no OpenMP runtime among the mapped libraries')
+
+
+def _odor_worker_init() -> None:
+    # (a forked child has none of the parent's OpenMP threads: with one thread no team is started)
+    _openmp_runtime().omp_set_num_threads(1)
+
+
+def _odor_worker_run(job):
+    return _POOL_MODEL.run_kc_odor(*job)
+
+
+def start_odor_pool(model, n: int):
+    """`n` worker processes forked from this one, each with this process's copy of `model` and one OpenMP thread, for
+    single-odor runs (`ExcitabilityModel.run_kc_odor`). Forked rather than spawned, so the model is built once (a build
+    on one thread takes about 6 min and 5 GB at its peak). A run of one odor is a team of one OpenMP thread, which does
+    not use the parent's thread pool (checked on atlas, 2026-11-11: the workers' counts equal those of runs of all odors on
+    12 threads in the parent, entry for entry)."""
+    global _POOL_MODEL
+    _openmp_runtime()
+    _POOL_MODEL = model
+    with warnings.catch_warnings():
+        # (Python warns that forking a process with threads may deadlock; the parent's OpenMP threads are idle here)
+        warnings.simplefilter('ignore', DeprecationWarning)
+        return multiprocessing.get_context('fork').Pool(int(n), initializer=_odor_worker_init)
 
 
 def seed_index(name: str) -> int:
@@ -1482,9 +1553,17 @@ class ExcitabilityModel(NoisyModel):
     thr_min_frac = 0.01
     thr_jitter = 'normal'
     draw_kinds = dict(tune='tune', rec='rec', check='check')
+    # the per-presentation jitter (--presentation-jitter; off unless switched on): with `presentation`, trials_b assembles
+    # every trial from single-odor runs, each presentation with a draw of its own of relative SD `sigma_p` beside the
+    # trial's shared draw; `workers` > 1 runs the single-odor runs in that many forked processes (`start_odor_pool`)
+    presentation = False
+    sigma_p = 0.0
+    workers = 1
+    draw_kinds_p = dict(tune='tune_p', rec='rec_p', check='check_p')
 
     def __init__(self, name: str, orn: pd.DataFrame, out_dir: Path):
         super().__init__(name, orn, out_dir)
+        self._pool = None
         if int(self.mp.kc.n_claws_active_to_spike) >= 0:
             raise NotImplementedError('thresholds are per claw (n_claws_active_to_spike >= 0)')
         self.n_kcs = self.draw_size = int(self.det['on'][0].shape[0])
@@ -1554,7 +1633,111 @@ class ExcitabilityModel(NoisyModel):
         out['factor'] = factor.astype(np.float32)
         return out
 
-    def trials_b(self, sigma: float, xis: np.ndarray, fixed_thr: float, conds=CONDS) -> dict:
+    def p_draws(self, seed: int, kind: str, rep: int, n: int) -> np.ndarray:
+        """n x odors x KCs standard normal draws of the per-presentation jitter for one tuning set or pseudo-recording
+        (`kind` 'tune', 'rec' or 'check'), from a stream of their own (draw kinds 6-8), so the shared draws stay
+        `b_draws`'s and SD 0 is part B's run. The first trials' draws do not depend on n."""
+        ss = np.random.SeedSequence(int(seed), spawn_key=(seed_index(self.name), DRAW_KINDS[self.draw_kinds_p[kind]], int(rep)))
+        return np.random.default_rng(ss).standard_normal((int(n), len(ODORS), self.n_kcs))
+
+    def thr_presentation(self, fixed_thr: float, sigma: float, xi, sigma_p: float, zeta):
+        """(thresholds, how many were clipped, the factors thr / thr0) of one presentation, from the trial's shared draw
+        `xi` and the presentation's own draw `zeta` (one per KC each). 'normal': thr0 * (1 + sigma * xi + sigma_p * zeta),
+        clipped below at thr_min_frac * thr0; 'lognormal': thr0 * exp(sigma * xi - sigma^2 / 2) * exp(sigma_p * zeta -
+        sigma_p^2 / 2). With sigma_p = 0, `thr_trial`'s thresholds exactly."""
+        if sigma_p == 0:
+            return self.thr_trial(fixed_thr, sigma, xi)
+        t0 = self.thr0(fixed_thr)
+        xi = np.asarray(xi, dtype=float).reshape(t0.shape)
+        zeta = np.asarray(zeta, dtype=float).reshape(t0.shape)
+        if self.thr_jitter == 'lognormal':
+            t = t0 * np.exp(sigma * xi - 0.5 * sigma ** 2) * np.exp(sigma_p * zeta - 0.5 * sigma_p ** 2)
+        elif self.thr_jitter == 'normal':
+            t = t0 * (1.0 + sigma * xi + sigma_p * zeta)
+        else:
+            raise ValueError(f'{self.thr_jitter=}')
+        lo = self.thr_min_frac * t0
+        clipped = t < lo
+        t = np.where(clipped, lo, t)
+        return t, int(clipped.sum()), (t / t0).ravel()
+
+    def run_kc_odor(self, cond: str, fixed_thr: float, thr: np.ndarray, j: int):
+        """The KC layer for odor ODORS[j] alone (olfsysm's mp.sim_only) at thresholds `thr`: that odor's (responses,
+        spike counts), one per KC. KCs interact only within an odor, so this is odor j's column of a run of all odors at
+        `thr` (`check_presentation`)."""
+        self.mp.sim_only = [int(self.pn_idx[j])]
+        try:
+            r, s = self.run_kc(cond, fixed_thr, thr)
+        finally:
+            self.mp.sim_only = []
+        if len(self.mp.sim_only):
+            raise RuntimeError('mp.sim_only was not reset')
+        return r[:, j].copy(), s[:, j].copy()
+
+    def odor_runs(self, jobs: list) -> list:
+        """`run_kc_odor` of each (condition, fixed_thr, thresholds, odor index) job, in order: in this process, or with
+        `workers` > 1 in that many forked worker processes (started on first use; `close_pool`)."""
+        if self.workers <= 1:
+            return [self.run_kc_odor(*job) for job in jobs]
+        if self._pool is None:
+            self._pool = start_odor_pool(self, self.workers)
+        return self._pool.map(_odor_worker_run, jobs, chunksize=1)
+
+    def close_pool(self) -> None:
+        global _POOL_MODEL
+        if getattr(self, '_pool', None) is not None:
+            self._pool.close()
+            self._pool.join()
+            self._pool = None
+        if _POOL_MODEL is self:
+            _POOL_MODEL = None
+
+    def close(self) -> None:
+        self.close_pool()
+        super().close()
+
+    def trials_presentation(self, sigma: float, xis: np.ndarray, zetas: np.ndarray, fixed_thr: float, conds=CONDS,
+            sigma_p=None) -> dict:
+        """Trials with the per-presentation jitter (SD `sigma_p`, the model's if None): per trial and condition one
+        single-odor run per odor, odor j at `thr_presentation` of the trial's shared draw xis[t] and its own draw
+        zetas[t, j]; the same draws APL on and off. Keys as `trials_b`'s ('factor' trials x KCs x odors), plus 'sigma_p'."""
+        if zetas is None:
+            raise ValueError('the per-presentation jitter needs its draws (zetas)')
+        sp, f, n, n_o = float(self.sigma_p if sigma_p is None else sigma_p), float(fixed_thr), len(xis), len(ODORS)
+        thrs, n_clip = {}, np.zeros(n, dtype=np.int64)
+        factor = np.empty((n, self.n_kcs, n_o), dtype=np.float32)
+        for t in range(n):
+            for j in range(n_o):
+                thrs[(t, j)], nc, factor[t, :, j] = self.thr_presentation(f, float(sigma), xis[t], sp, zetas[t][j])
+                n_clip[t] += nc
+        res = iter(self.odor_runs([(cond, f, thrs[(t, j)], j) for cond in conds for t in range(n) for j in range(n_o)]))
+        out = {}
+        for cond in conds:
+            resp = np.empty((n, self.n_kcs, n_o), dtype=bool)
+            spk = np.empty((n, self.n_kcs, n_o), dtype=np.uint16)
+            for t in range(n):
+                for j in range(n_o):
+                    resp[t, :, j], spk[t, :, j] = next(res)
+            out[f'{cond}_resp'], out[f'{cond}_spk'] = resp, spk
+        out.update({k: np.stack([v] * n) for k, v in self.pn_summary.items()})
+        out.update(n_clipped=n_clip, factor=factor, sigma=np.asarray(float(sigma)), fixed_thr=np.asarray(f),
+            n_draws_per_trial=np.asarray(self.n_kcs * n_o), sigma_p=np.asarray(sp))
+        return out
+
+    def check_presentation(self) -> dict:
+        """The single-odor path against the deterministic run: a trial at sigma = sigma_p = 0 through
+        `trials_presentation` (thresholds thr0, one run per odor) has to reproduce it entry for entry; mismatching
+        entries per condition."""
+        tr = self.trials_presentation(0.0, np.zeros((1, self.n_kcs)), np.zeros((1, len(ODORS), self.n_kcs)), self.f0,
+            sigma_p=0.0)
+        return {cond: dict(responses_mismatch=int((tr[f'{cond}_resp'][0] != self.det[cond][0]).sum()),
+            spike_counts_mismatch=int((tr[f'{cond}_spk'][0] != self.det[cond][1]).sum())) for cond in CONDS}
+
+    def trials_b(self, sigma: float, xis: np.ndarray, fixed_thr: float, conds=CONDS, zetas=None, sigma_p=None) -> dict:
+        """The trials of draws `xis` at jitter `sigma` and `fixed_thr`; with the per-presentation jitter
+        (`presentation`), `trials_presentation` with its draws `zetas` (and SD `sigma_p`, the model's if None)."""
+        if self.presentation:
+            return self.trials_presentation(sigma, xis, zetas, fixed_thr, conds, sigma_p)
         trs = [self.trial(sigma, xi, fixed_thr, conds) for xi in xis]
         out = {k: np.stack([tr[k] for tr in trs]) for k in trs[0]}
         out.update(sigma=np.asarray(float(sigma)), fixed_thr=np.asarray(float(fixed_thr)),
@@ -1570,9 +1753,10 @@ class ExcitabilityModel(NoisyModel):
         return res, tr
 
     def tune(self, sigma: float, xis: np.ndarray, target: float, guess=None, tol: float = 0.01, max_evals: int = 16,
-            log=None) -> dict:
+            log=None, zetas=None, sigma_p=None) -> dict:
         """fixed_thr at which the APL-on response fraction of the trials with draws `xis`, averaged
-        over trials, is `target` within relative tolerance `tol`.
+        over trials, is `target` within relative tolerance `tol` (with the per-presentation jitter, its
+        draws `zetas` and SD `sigma_p`: `trials_b`).
 
         The fraction falls with fixed_thr (same draws at every evaluation), so: step from `guess`
         (multiplicatively, doubling the step) until the target is bracketed, then split the
@@ -1586,7 +1770,7 @@ class ExcitabilityModel(NoisyModel):
         def ev(f: float) -> float:
             f = float(f)
             if f not in evals:
-                a = self.trials_b(sigma, xis, f, conds=('on',))
+                a = self.trials_b(sigma, xis, f, conds=('on',), zetas=zetas, sigma_p=sigma_p)
                 evals[f] = (float(a['on_resp'].mean()), a)
                 if log:
                     log(f'  tune sigma {sigma:g}: fixed_thr {f:.6g} -> APL-on rate {evals[f][0]:.5f} (target {target:.5f})')
@@ -1634,27 +1818,50 @@ class ExcitabilityModel(NoisyModel):
 class SessionB(Session):
     """Session for part B: tuned calibration points and pseudo-recordings at re-tuned thresholds."""
     model_cls = ExcitabilityModel
+    # the noise level's name in calibration and trial file names (`b_key`)
+    key = B_KEY
+
+    def get(self) -> ExcitabilityModel:
+        """`Session.get`; with the per-presentation jitter, the single-odor path is also checked against the
+        deterministic run when the model is built (`check_presentation`, asserted)."""
+        new = self.model is None
+        m = super().get()
+        if new and m.presentation:
+            res = m.check_presentation()
+            self.record['presentation_path_vs_det'] = res
+            self._save_checks()
+            print(f'{self.name}: single-odor runs at sigma = 0 vs deterministic {res}', flush=True)
+            bad = [c for c, v in res.items() if v['responses_mismatch'] or v['spike_counts_mismatch']]
+            assert not bad, f'{self.name}: the single-odor runs did not reproduce the deterministic run ({res})'
+        return m
+
+    def _check_sigma_p(self, path: Path, a: dict) -> None:
+        if self.model_cls.presentation and float(a.get('sigma_p', np.nan)) != float(self.model_cls.sigma_p):
+            raise RuntimeError(f'{path}: per-presentation jitter {a.get("sigma_p")}, not {self.model_cls.sigma_p}')
 
     def tuned(self, sigma: float, n_tune: int, seed: int, target: float, guess, tol: float, max_evals: int) -> dict:
         """The re-tuned threshold at `sigma` with its tuning trials (APL on and off at the tuned
         threshold), from the file if present."""
-        path = cal_path(self.out_dir, self.name, sigma, n_tune, B_KEY)
+        path = cal_path(self.out_dir, self.name, sigma, n_tune, self.key)
         if path.exists():
             a = load_npz(path)
             if float(a['rate_target']) != float(target) or int(a['seed']) != int(seed):
                 raise RuntimeError(f'{path}: tuned for rate target {float(a["rate_target"])} / seed {int(a["seed"])}, not '
                     f'{target} / {seed}; move it away to re-tune')
+            self._check_sigma_p(path, a)
             return a
         m = self.get()
         xis = b_draws(seed, self.name, m.draw_kinds['tune'], 0, n_tune, m.draw_size)
+        zetas = m.p_draws(seed, 'tune', 0, n_tune) if m.presentation else None
         t0 = time.time()
-        if sigma == 0:
+        if sigma == 0 and not (m.presentation and m.sigma_p > 0):
             res = dict(fixed_thr=m.f0, rate=float(m.det['on'][0].mean()), converged=True, n_evals=0,
-                history=np.empty((0, 2)), arrs=m.trials_b(0.0, xis, m.f0, conds=('on',)))
+                history=np.empty((0, 2)), arrs=m.trials_b(0.0, xis, m.f0, conds=('on',), zetas=zetas))
         else:
-            res = m.tune(sigma, xis, target, guess, tol, max_evals, log=lambda s: print(f'{self.name}{s}', flush=True))
+            res = m.tune(sigma, xis, target, guess, tol, max_evals, log=lambda s: print(f'{self.name}{s}', flush=True),
+                zetas=zetas)
         arrs = dict(res['arrs'])
-        arrs.update({k: v for k, v in m.trials_b(sigma, xis, res['fixed_thr'], conds=('acute_off',)).items()
+        arrs.update({k: v for k, v in m.trials_b(sigma, xis, res['fixed_thr'], conds=('acute_off',), zetas=zetas).items()
             if k.startswith('acute_off_')})
         arrs.update(fixed_thr=np.asarray(res['fixed_thr']), fixed_thr_det=np.asarray(m.f0), rate_target=np.asarray(float(target)),
             rate_tuned=np.asarray(res['rate']), converged=np.asarray(res['converged']), n_evals=np.asarray(res['n_evals']),
@@ -1662,6 +1869,8 @@ class SessionB(Session):
         save_npz(path, arrs)
         dt = time.time() - t0
         n_runs = res['n_evals'] * n_tune + n_tune
+        if m.presentation:
+            n_runs *= len(ODORS)
         self.sim_seconds += dt
         self.n_trials_run += n_tune
         self.n_noisy += n_tune if sigma > 0 else 0
@@ -1677,10 +1886,12 @@ class SessionB(Session):
             if float(a['fixed_thr']) != float(fixed_thr) or int(a['seed']) != int(seed):
                 raise RuntimeError(f'{path}: fixed_thr {float(a["fixed_thr"])} / seed {int(a["seed"])}, expected {fixed_thr} / '
                     f'{seed} (a different tuning); move it away to re-run')
+            self._check_sigma_p(path, a)
             return a
         m = self.get()
         t0 = time.time()
-        arrs = m.trials_b(sigma, b_draws(seed, self.name, m.draw_kinds['rec'], rep, n, m.draw_size), fixed_thr)
+        arrs = m.trials_b(sigma, b_draws(seed, self.name, m.draw_kinds['rec'], rep, n, m.draw_size), fixed_thr,
+            zetas=m.p_draws(seed, 'rec', rep, n) if m.presentation else None)
         arrs['seed'] = np.asarray(int(seed))
         dt = time.time() - t0
         save_npz(path, arrs)
@@ -1839,6 +2050,10 @@ def heavy_tail(arrs, cond: str) -> dict:
     if all('factor' in a and a['factor'].shape[-1] == s.shape[1] for a, s in zip(arrs, spk)):
         low = sum(float(s[a['factor'] < 0.5].sum()) for a, s in zip(arrs, spk))
         out['spike_share_thr_below_half'] = low / max(sum(float(s.sum()) for s in spk), 1e-12)
+    elif all('factor' in a and a['factor'].shape == s.shape for a, s in zip(arrs, spk)):
+        # (the per-presentation jitter: one factor per KC, odor and trial)
+        low = sum(float(s[a['factor'] < 0.5].sum()) for a, s in zip(arrs, spk))
+        out['spike_share_thr_below_half'] = low / max(sum(float(s.sum()) for s in spk), 1e-12)
     return out
 
 
@@ -1923,16 +2138,26 @@ def main_b(args) -> None:
     the same analysis as part A (tables / figure in <results>/part<X>, trials in
     <outputs>/part<X>)."""
     part = PARTS[args.part]
-    # (the lognormal threshold jitter is a different noise: its own folders)
-    sub = part['dir'] + ('_lognormal' if args.part == 'B' and args.thr_jitter == 'lognormal' else '')
+    pres = args.presentation_jitter is not None
+    # (the lognormal threshold jitter and the per-presentation jitter are different noises: their own folders)
+    sub = part['dir'] + ('_presentation' if pres else '') + ('_lognormal' if args.part == 'B' and args.thr_jitter == 'lognormal' else '')
     res_dir = Path(args.results_dir) if args.results_dir else H.results_dir(args.experiment) / sub
     out_dir = Path(args.outputs_dir) if args.outputs_dir else H.outputs_dir(args.experiment) / sub
     res_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     ExcitabilityModel.thr_min_frac = float(args.thr_min_frac)
     ExcitabilityModel.thr_jitter = args.thr_jitter
+    key = b_key(args.presentation_jitter)
+    if pres:
+        ExcitabilityModel.presentation = True
+        ExcitabilityModel.sigma_p = float(args.presentation_jitter)
+        ExcitabilityModel.workers = int(args.workers)
     grid = args.sigma_grid if args.sigma_grid else part['grid']
     fig_kw = dict(ncol=B_KEY, xlabel=part['xlabel'], suptitle=part['title'])
+    if pres:
+        fig_kw['suptitle'] = part['title'] + (
+            f'\nwith a per-presentation jitter of each KC\'s threshold, relative SD {args.presentation_jitter:g}, drawn for each '
+            'odor of each trial (each trial assembled from one run per odor)')
     if args.figure_only:
         make_figure(res_dir, **fig_kw)
         return
@@ -1942,7 +2167,9 @@ def main_b(args) -> None:
     settings = dict(n_recordings=args.n_recordings, n_trials=args.n_trials, sigma_grid=grid,
         tune_trials=args.tune_trials, seed=args.seed, rate_tol=args.rate_tol, tune_max_evals=args.tune_max_evals,
         below=args.below, max_extend=args.cal_max_extend, refine=args.cal_refine, levels=args.levels,
-        **({'thr_min_frac': args.thr_min_frac, 'thr_jitter': args.thr_jitter} if args.part == 'B' else {}))
+        **({'thr_min_frac': args.thr_min_frac, 'thr_jitter': args.thr_jitter} if args.part == 'B' else {}),
+        **({'shared_sigma': args.shared_sigma} if args.shared_sigma is not None else {}),
+        **({'presentation_jitter': args.presentation_jitter, 'workers': args.workers} if pres else {}))
     if not args.analyse_only:
         src_sigma = None
         if args.sigma_from:
@@ -1960,8 +2187,9 @@ def main_b(args) -> None:
             part=args.part, host=subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip(), models=args.models,
             model_descriptions={m: MODELS[m] for m in args.models}, ref_fit=REF_FIT, fits_source='results/E34_gain_bounded/fits.csv',
             model_sources={m: dict(experiment=FIT_MODELS[m][0], tag=FIT_MODELS[m][1]) for m in args.models if m in FIT_MODELS},
-            experiment=args.experiment, sigma_from=src_sigma, settings=settings, floor_targets=targets, noise=part['note'],
-            approx_conc_note=H.APPROX_CONC_NOTE, model=H.model_provenance(orn_deltas=orn))
+            experiment=args.experiment, sigma_from=src_sigma, settings=settings, floor_targets=targets,
+            noise=part['note'] + (PRES_NOISE_NOTE if pres else ''), approx_conc_note=H.APPROX_CONC_NOTE,
+            model=H.model_provenance(orn_deltas=orn))
         if prev is not None:
             prov['bases'], prov['params'] = prev.get('bases', {}), prev.get('params', {})
             prov['model_info'] = prev.get('model_info', {})
@@ -1974,6 +2202,7 @@ def main_b(args) -> None:
         t_all = time.time()
         for name in args.models:
             sess = part['session'](name, orn, out_dir, checks, checks_path, prov, prov_path)
+            sess.key = key
             try:
                 # the deterministic run's APL-on response rate and threshold (building the model if not saved here)
                 if all((out_dir / f'{name}_{c}_{k}.parquet').exists() for c in CONDS for k in ('responses', 'spike_counts')) and \
@@ -1986,7 +2215,13 @@ def main_b(args) -> None:
                     rate_target, f0 = float(m.det['on'][0].mean()), m.f0
                 prov.setdefault('rate_targets', {})[name] = rate_target
                 write_prov(prov_path, prov)
-                if src_sigma is None:
+                if args.shared_sigma is not None:
+                    # (--shared-sigma: the level given, no calibration; tuned, and its floors measured, there)
+                    levels = {'given': r3(args.shared_sigma)}
+                    rows, info = calibrate_b(sess, [levels['given']], args.tune_trials, 0, 0, targets, rate_target,
+                        args.seed, args.rate_tol, args.tune_max_evals, f0, grid_kind='given',
+                        fixed_matched={c: dict(sd=None, given=levels['given']) for c in CONDS})
+                elif src_sigma is None:
                     rows, info = calibrate_b(sess, grid, args.tune_trials, args.cal_max_extend, args.cal_refine, targets,
                         rate_target, args.seed, args.rate_tol, args.tune_max_evals, f0)
                     levels = select_levels(make_levels_b(info['matched'], args.below), args.levels)
@@ -2009,12 +2244,14 @@ def main_b(args) -> None:
                     fixed_thr_det=f0, rate_target=rate_target, n_recordings=args.n_recordings, n_trials=args.n_trials,
                     seed=args.seed, noise_level=(f'sigma ({part["xlabel"]}; the "sd" keys of matched / peaks hold sigma)'),
                     description=MODELS[name], **model_source(name),
-                    **({} if src_sigma is None else {'sigma_from': {k: src_sigma[k] for k in ('model', 'file')}})))
-                print(f'{name}: matched sigma APL on {info["matched"]["on"]["sd"]:g}, APL off '
-                    f'{info["matched"]["acute_off"]["sd"]:g}; levels {levels}; re-tuned fixed_thr {lvl_thr}', flush=True)
+                    **({} if src_sigma is None else {'sigma_from': {k: src_sigma[k] for k in ('model', 'file')}}),
+                    **({'presentation_jitter': float(args.presentation_jitter), 'file_key': key} if pres else {})))
+                sd_on, sd_off = (info['matched'][c]['sd'] for c in CONDS)
+                print(f'{name}: matched sigma APL on {"-" if sd_on is None else format(sd_on, "g")}, APL off '
+                    f'{"-" if sd_off is None else format(sd_off, "g")}; levels {levels}; re-tuned fixed_thr {lvl_thr}', flush=True)
                 for label, sigma in levels.items():
                     for rep in range(args.n_recordings):
-                        sess.ensure_b(trials_path(out_dir, name, sigma, args.n_trials, rep, B_KEY), sigma, args.n_trials,
+                        sess.ensure_b(trials_path(out_dir, name, sigma, args.n_trials, rep, key), sigma, args.n_trials,
                             lvl_thr[label], args.seed, rep)
             finally:
                 sess.finish()
@@ -2035,17 +2272,18 @@ def main_b(args) -> None:
             fixed_thr_ratio=lv['tuned_fixed_thr'][label] / lv['fixed_thr_det'], rate_target_on=lv['rate_target'],
             tune_rate=lv['tuning'][label]['rate_tuned'], tune_converged=lv['tuning'][label]['converged'],
             frac_clipped=float(np.mean([a['n_clipped'].mean() / float(a['n_draws_per_trial']) for a in arrs])), seed=lv['seed'],
-            sigma_from=(lv.get('sigma_from') or {}).get('model'), **heavy_tail(arrs, cond))
+            sigma_from=(lv.get('sigma_from') or {}).get('model'), **heavy_tail(arrs, cond),
+            **({'presentation_sd': float(args.presentation_jitter)} if pres else {}))
 
     # (again: other processes may have added models to this folder meanwhile)
     levels_all = read_json(levels_path, {})
     data = data_side()
-    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data, key=B_KEY, ncol=B_KEY, extra=extra,
+    st = analyse_all(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, data, key=key, ncol=B_KEY, extra=extra,
         save_recordings=args.save_recording_distances)
     print_summary(st, res_dir, ncol=B_KEY, extra_cols=('fixed_thr_ratio', 'frac_clipped', 'max_spike_count',
         'spike_share_thr_below_half'))
     if args.zcell:
-        analyse_zcell(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, key=B_KEY, ncol=B_KEY, q=args.zcell_q,
+        analyse_zcell(levels_all, args.n_recordings, args.n_trials, out_dir, res_dir, key=key, ncol=B_KEY, q=args.zcell_q,
             amp=args.zcell_map)
     if len(st):
         make_figure(res_dir, **fig_kw)
@@ -2110,6 +2348,15 @@ def main() -> None:
     ap.add_argument('--sigma-from-dir', default=None, metavar='DIR',
         help="the results folder whose noise_levels.json --sigma-from reads (default: this run's if it holds MODEL, else "
         "<shared>/results/E43_model_trial_noise/<part folder>)")
+    ap.add_argument('--presentation-jitter', type=float, default=None, metavar='SP',
+        help='part B: also a per-presentation threshold jitter of relative SD SP, drawn for each KC, odor and trial, beside '
+        'the shared draw of each KC and trial; each trial assembled from one run per odor (off by default; folders '
+        'partB_presentation)')
+    ap.add_argument('--shared-sigma', type=float, default=None, metavar='S',
+        help='part B: the shared jitter given (level "given"), no calibration')
+    ap.add_argument('--workers', type=int, default=1,
+        help='with --presentation-jitter: processes forked from this one (one OpenMP thread each) for the single-odor runs '
+        '(default 1: in this process)')
     ap.add_argument('--zcell', action='store_true',
         help="(E73 part C) also read every model x level's trials through the per-KC session z-score reading, calibrated "
         'on the APL-on trials (and the deterministic run the same way), scored against the same reading of the KC data: '
@@ -2138,6 +2385,14 @@ def main() -> None:
         ap.error('floors need at least 2 trials')
     if args.sigma_from and args.part == 'A':
         ap.error('--sigma-from is for parts B / C')
+    if (args.presentation_jitter is not None or args.shared_sigma is not None) and args.part != 'B':
+        ap.error('--presentation-jitter / --shared-sigma are part B\'s')
+    if args.presentation_jitter is not None and not args.presentation_jitter >= 0:
+        ap.error('--presentation-jitter must be >= 0')
+    if args.shared_sigma is not None and (args.sigma_from or args.levels):
+        ap.error('--shared-sigma gives the one level ("given"): no --sigma-from or --levels with it')
+    if args.workers > 1 and args.presentation_jitter is None:
+        ap.error('--workers is for the single-odor runs of --presentation-jitter')
     try:
         fit_names = [model_from(s) for s in args.model_from]
     except (ValueError, FileNotFoundError) as e:
