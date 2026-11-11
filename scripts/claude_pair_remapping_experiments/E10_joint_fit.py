@@ -207,6 +207,14 @@ def e19_row(claw_thr: float, k: float, kckc: float):
     return None if len(m) == 0 else m.iloc[0]
 
 
+def e16_row(claw_thr: float):
+    """E16's bouton base at this per-claw threshold with no saturation (tag bouton_thr<claw_thr>, tuned
+    at 5 %), or None: the bases above 70 Hz that E19's grid does not have (E78's 100 and 130 Hz)."""
+    s = pd.read_csv(H.shared_dir() / 'results' / 'E16_claw_saturation' / 'stats_variants.csv')
+    m = s[s.tag == f'bouton_thr{claw_thr:g}']
+    return None if len(m) == 0 else m.iloc[0]
+
+
 def base_kws(claw_thr, apl_drive: str = 'claws') -> dict:
     """The bouton base's fit_mb_model kwargs; `apl_drive='spikes'` drives APL by the KCs'
     spikes (plus the bouton rates) instead of the summed claw input (pn_claw_to_apl=False;
@@ -438,9 +446,14 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         off_path = out_dir / 'base_acute_off_spike_counts.parquet'
     else:
         r = e19_row(claw_thr, 0.0, 0.0)
-        if r is None:
-            raise ValueError(f'no E19 base row for claw_thr {claw_thr}')
-        initial = {k: float(r[k]) for k in PARAM_KEYS}
+        if r is not None:
+            initial = {k: float(r[k]) for k in PARAM_KEYS}
+        else:
+            # above 70 Hz: E16's base (its stats table has the somatic threshold as fixed_thr_mean)
+            r = e16_row(claw_thr)
+            if r is None:
+                raise ValueError(f'no E19 or E16 base row for claw_thr {claw_thr}')
+            initial = {k: float(r['fixed_thr_mean' if k == 'fixed_thr' else k]) for k in PARAM_KEYS}
         # hal's E16 APL-off run of this base (the breadth E19 used)
         hal_path = hal_out / 'E16_claw_saturation' / f'bouton_thr{claw_thr:g}_acute_off_spike_counts.parquet'
         off_path = out_dir / f'thr{claw_thr:g}_base_acute_off_spike_counts.parquet'
