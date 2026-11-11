@@ -20,7 +20,19 @@ directory's notes/ and are linked from here.
   the summary rows that quote them; the "corrected for trial-to-trial noise" rows of E43, E48 and E68 and of E76's unit table; the "trial
   noise removed" column and the "at zero" sentence of E78's entry and report item 78.
 - **Done.** Filed; the flies' variability across the three repeats (E81, atlas) estimates the noise-free distances with intervals (part A4).
-- **Remains.** Part A4's estimate; then annotation of every quoted noise-corrected value, or the correction replaced.
+- **Done (E81 parts A and B, atlas, 2026-11-11).** The shared part is confirmed with intervals (E81_repeat_structure.py,
+  results/E81_repeat_structure/): the same-repeat gap is 0.025 (90 % interval over resampled recordings 0.019 to 0.033) in control
+  flies and 0.070 (0.055 to 0.085) with APL output blocked (TNT), positive in all 19 recordings. The noise-free estimate from cosines
+  of different repeats (`kc_remapping_harness.noise_free_pair_distances`; registry `noise_free_*`) gives mean distances 0.811
+  (0.782 to 0.835) / 0.625 (0.569 to 0.677) where the correction in use gives 0.789 / 0.577, a mean APL effect of +0.186 (0.127 to
+  0.244) for +0.212, the six pairs 0.365 / 0.222 for 0.298 / 0.122 and the block 0.067 for 0.072. With APL output blocked (TNT) the
+  estimate from the first against the third repeat is 0.030 (0.019 to 0.040) below that from adjacent repeats (control flies
+  +0.001), so the drift does not cancel completely there. In the models' pipeline trials, whose variability is all shared by the
+  odors of a trial, the correction in use takes the six pairs to about 0 or below it at the matched levels (C2: 0.012 / 0.005; the
+  other archived models -0.65 to +0.10), where the noise-free estimate keeps them near their trial means (C2: 0.213 / 0.145; the
+  others 0.07 to 0.28; saved_trials_structure.csv).
+- **Remains.** Annotation of every quoted noise-corrected value (the list under Touches), or the correction replaced by the
+  noise-free estimate; for E81's write-up.
 
 ### E75's part B named the archive's least-common-error variants wrongly (found 2026-11-10 18:15, viki's planning subagent for E77; checked by viki)
 - **What.** The glomerulus profile of APL inhibition (E75) part B ranks every archived variant by how much of the error common to

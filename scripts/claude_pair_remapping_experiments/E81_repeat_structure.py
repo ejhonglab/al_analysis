@@ -102,6 +102,9 @@ COLORS = {'TNT3c': '#2a78d6', 'TNT': '#eb6834', 'c3': '#1baf7a', 'c4': '#eda100'
           'ink2': '#52514e', 'grid': '#e6e5e1'}
 # the breadth-2 APL-effect fit on the real wiring (C2, E67) and the families' tags (E72)
 C2 = ('E67_apl_effect_fits', 'rate0.068_aplboth_k2_cap3')
+POP_LABELS = {'breadth2_four': 'breadth-2 family, four wirings through the pipeline',
+              'breadth2_eight': "breadth-2 family, E72's eight wirings", 'ceiling_four': 'firing-ceiling family, four wirings',
+              'pipeline_eight': 'the eight wirings through the pipeline'}
 TABLE_START = '<!-- E81_repeat_structure.py parts A and B: start -->'
 TABLE_END = '<!-- E81_repeat_structure.py parts A and B: end -->'
 
@@ -1033,10 +1036,10 @@ def figures_a() -> None:
     fig.savefig(out / 'E81_rundown.png', dpi=150)
     plt.close(fig)
 
-    fig, axs = plt.subplots(1, 3, figsize=(12, 3.6))
+    fig, axs = plt.subplots(1, 3, figsize=(12.5, 3.9))
     kk = kinds[(kinds.units == 'z') & (kinds['values'] == 'graded') & (kinds.level == 'genotype')]
-    labels = [('same_odor', 'adjacent', 'same odor,\nadjacent repeats'), ('same_odor', 'first_third', 'same odor,\nfirst / third'),
-              ('all', 'same_repeat', 'two odors,\nsame repeat'), ('all', 'different_repeat', 'two odors,\ndifferent repeats')]
+    labels = [('same_odor', 'adjacent', 'same odor,\nadjacent\nrepeats'), ('same_odor', 'first_third', 'same odor,\nfirst and\nthird'),
+              ('all', 'same_repeat', 'two odors,\nsame\nrepeat'), ('all', 'different_repeat', 'two odors,\ndifferent\nrepeats')]
     w = 0.38
     for i, g in enumerate(GENOS):
         s = kk[kk.genotype == g].set_index(['pairset', 'kind'])
@@ -1078,7 +1081,7 @@ def figures_a() -> None:
     plt.close(fig)
 
     fig, axs = plt.subplots(1, 2, figsize=(9, 3.6))
-    axs[0].scatter(z['effect_trial_mean'], z['effect_noise_free'], s=14, color=COLORS['TNT3c'], edgecolor='white', lw=0.4,
+    axs[0].scatter(z['effect_trial_mean'], z['effect_noise_free'], s=14, color=COLORS['c3'], edgecolor='white', lw=0.4,
                    label='noise-free')
     axs[0].scatter(z['effect_trial_mean'], z['effect_corrected'], s=14, color=COLORS['c4'], edgecolor='white', lw=0.4,
                    label='the correction in use')
@@ -1090,8 +1093,8 @@ def figures_a() -> None:
     axs[0].set_title('the per-pair APL effect, noise-free and corrected', fontsize=9)
     axs[0].legend(fontsize=7, frameon=False)
     e = ebr.set_index(['statistic', 'repeat'])
-    for stat, col, lab in (('mean', COLORS['ink'], 'all pairs'), ('ester_mean', COLORS['TNT3c'], 'ester group'),
-                           ('alcohol_mean', COLORS['TNT'], 'alcohol group')):
+    for stat, col, lab in (('mean', COLORS['ink'], 'all pairs'), ('ester_mean', COLORS['c3'], 'ester group'),
+                           ('alcohol_mean', COLORS['c4'], 'alcohol group')):
         v = [e.loc[(stat, r)] for r in ('1', '2', '3')]
         axs[1].errorbar([1, 2, 3], [x.value for x in v], yerr=[[x.value - x.lo for x in v], [x.hi - x.value for x in v]], color=col,
                         lw=2, marker='o', ms=6, capsize=3, label=lab)
@@ -1118,13 +1121,13 @@ def figures_b() -> None:
         if a not in v:
             continue
         vv = v[[a, b]].dropna()
-        ax.scatter(vv[a], vv[b], s=8, color=COLORS['TNT3c'], alpha=0.5, lw=0)
+        ax.scatter(vv[a], vv[b], s=8, color=COLORS['ink2'], alpha=0.45, lw=0, label='archived variants')
         p = b1[b1.kind == 'population']
-        for _, r in p.iterrows():
+        for (_, r), mk in zip(p.iterrows(), ('o', 's', '^', 'D')):
             if pd.notna(r.get(a)):
-                ax.scatter(r[a], r[b], s=40, color=COLORS['TNT'], edgecolor='white', lw=0.8)
-                ax.annotate(r['tag'].replace('_', ' '), (r[a], r[b]), fontsize=6, xytext=(4, -2), textcoords='offset points',
-                            color=COLORS['ink2'])
+                ax.scatter(r[a], r[b], s=42, marker=mk, color=COLORS['c3'], edgecolor=COLORS['ink'], lw=0.6,
+                           label='population: ' + POP_LABELS.get(r['tag'], r['tag']))
+        ax.legend(fontsize=6.5, frameon=False, loc='upper left')
         lim = [min(vv.min()) - 0.005, max(vv.max()) + 0.005]
         ax.plot(lim, lim, color=COLORS['ink2'], lw=0.8)
         rho = H.spearman(vv[a], vv[b])
@@ -1143,6 +1146,8 @@ def figures_b() -> None:
             gg = gg.drop_duplicates('sigma').sort_values('sigma')
             ax.plot(np.r_[0, gg.sigma], np.r_[0, gg.gap], color=COLORS['ink2'], lw=0.7, alpha=0.5)
         ax.axhline(j[f'flies_gap_{cs}'].iloc[0], color=COLORS[g], lw=1.5, ls='--', label=f'{GLAB[g]}')
+        ax.set_xlim(0, 0.25)
+        ax.set_ylim(0, 0.3)
         ax.set_xlabel('threshold jitter (sigma)')
         ax.set_title(f'APL {cs}: the models\' same-repeat gap', fontsize=9)
         ax.legend(fontsize=7, frameon=False)
