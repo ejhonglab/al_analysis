@@ -44,7 +44,8 @@ directory's notes/ and are linked from here.
 - **Touches.** results/noise_floor/; the registry's noise-corrected values (the mean distances, the block's +0.072, the effect's +0.212) and
   the summary rows that quote them; the "corrected for trial-to-trial noise" rows of E43, E48 and E68 and of E76's unit table; the "trial
   noise removed" column and the "at zero" sentence of E78's entry and report item 78.
-- **Done.** Filed; the flies' variability across the three repeats (E81, atlas) estimates the noise-free distances with intervals (part A4).
+- **Done.** E81 (atlas) estimated the noise-free values with intervals (registry `noise_free_*`; part A4); the summary quotes them beside or in place of
+  the earlier values (template, 2026-11-11 11:20); E76's note carries a dated annotation (11:25).
 - **Done (E81 parts A and B, atlas, 2026-11-11).** The shared part is confirmed with intervals (E81_repeat_structure.py,
   results/E81_repeat_structure/): the same-repeat gap is 0.025 (90 % interval over resampled recordings 0.019 to 0.033) in control
   flies and 0.070 (0.055 to 0.085) with APL output blocked (TNT), positive in all 19 recordings. The noise-free estimate from cosines
