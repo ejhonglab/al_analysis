@@ -103,6 +103,44 @@ def kc_scale_ratios(path: Optional[Path] = None) -> pd.Series:
     return s
 
 
+# suite2p's neuropil coefficient in Yang's pipeline (Fc = F - 0.7 Fneu)
+NEUROPIL_COEF = 0.7
+
+
+def kc_scales_table(path: Optional[Path] = None) -> pd.DataFrame:
+    """viki's kc_scales.csv (every column: sd_full, sd_base, scale_ratio, drift, F_mean, Fneu_mean, ...) indexed
+    (genotype, date, fly_num, hemibrain, roi) as `kc_scale_ratios`."""
+    ks = pd.read_csv(path or INPUTS['yang_norm_kc_scales'])
+    day, unit = (ks.recording.str.split('_', expand=True)[i] for i in (0, 1))
+    ks.index = pd.MultiIndex.from_arrays([ks.genotype, day.str[:4] + '-' + day.str[4:6] + '-' + day.str[6:8],
+        unit.str[0].astype(int), unit.str[2], ks.kc], names=['genotype'] + H.RECORDING_KEYS + ['roi'])
+    assert not ks.index.duplicated().any()
+    return ks
+
+
+def kc_scales_raw(path: Optional[Path] = None) -> pd.Series:
+    """Each KC's whole-trace SD of Fc (`sd_full`, Yang's z unit): with `kc_response_matrices(scale=...)`, each response
+    becomes the KC's change in Fc in suite2p's raw fluorescence units."""
+    return kc_scales_table(path)['sd_full'].astype(float)
+
+
+def kc_scales_fnorm(denominator: str = 'F_mean', floor_pct: float = 5.0, path: Optional[Path] = None) -> Tuple[pd.Series, float]:
+    """(scale, floor) for the F-normalized units: each KC's `sd_full` over `denominator`, 'F_mean' (the KC's mean F over
+    the recording) or 'Fc_mean' (its mean Fc, F_mean - NEUROPIL_COEF * Fneu_mean); the denominator is floored at the
+    `floor_pct` percentile of its positive values over all KCs of both genotypes (`floor`, in raw fluorescence units),
+    so that a KC whose mean is near or below 0 does not blow up. With `kc_response_matrices(scale=...)`, each response
+    becomes the KC's change in Fc over that denominator."""
+    ks = kc_scales_table(path)
+    if denominator == 'F_mean':
+        d = ks['F_mean'].astype(float)
+    elif denominator == 'Fc_mean':
+        d = ks['F_mean'].astype(float) - NEUROPIL_COEF * ks['Fneu_mean'].astype(float)
+    else:
+        raise ValueError(f'{denominator=} not F_mean or Fc_mean')
+    floor = float(d[d > 0].quantile(floor_pct / 100.0))
+    return ks['sd_full'].astype(float) / d.clip(lower=floor), floor
+
+
 def kc_response_matrices(scale: Optional[pd.Series] = None) -> Dict[str, Dict[tuple, pd.DataFrame]]:
     """{genotype: {(date, fly_num, hemibrain): KCs x the 16 odors (APL16_ODORS order) trial-mean matrix}}, recordings
     in sorted order: Yang's z units, or, with `scale` (`kc_scale_ratios`), each KC's row times its scale (its
