@@ -1519,7 +1519,8 @@ def part_e(out: Path, threads: int = 12, only: Optional[Sequence[str]] = None, c
             r0 = pd.read_csv(runs_p)
             done = set(r0.loc[(r0['base'] == b) & (r0['experiment'] == exp) & (r0['tag'] == tag), 'point'])
         for pid, axis, factor, cond in e_points():
-            if (only and pid not in only) or pid in done:
+            # (the base points are simulated by the reproduction check anyway, so `only` keeps them)
+            if (only and pid not in only and not pid.startswith('base_')) or pid in done:
                 continue
             t1 = time.time()
             if pid == 'base_on':
@@ -1547,10 +1548,14 @@ def part_e(out: Path, threads: int = 12, only: Optional[Sequence[str]] = None, c
             pd.DataFrame([row]).to_csv(runs_p, mode='a', header=not runs_p.exists(), index=False)
             print(f"{b} {pid}: rate {row['rate']:.4f}, mean distance raw {row['mean_dist_raw']:.3f}, largest count "
                   f"{row['max_count']:.0f} ({row['seconds']:.0f} s)", flush=True)
+    # (the reproduction checks of earlier runs are kept, keyed by base, beside this run's settings)
     prev = json.loads((out / 'provenance_E.json').read_text()) if (out / 'provenance_E.json').exists() else {}
-    prev.setdefault('checks', {}).update(checks)
-    _provenance(out, 'E', dict(prev, block_factors=BLOCK_FACTORS, thr_factors=THR_FACTORS, bases={k: list(v[1]) for k, v in spec.items()},
-        threads=threads, omp_num_threads=os.environ.get('OMP_NUM_THREADS'), omp_thread_limit=os.environ.get('OMP_THREAD_LIMIT')))
+    all_checks = dict(prev.get('checks', {}), **checks)
+    runs = prev.get('runs', []) + [dict(time=datetime.now(timezone.utc).isoformat(timespec='seconds'), bases=list(bases or spec),
+        only=list(only) if only else None, check_only=check_only, threads=threads, omp_num_threads=os.environ.get('OMP_NUM_THREADS'),
+        omp_thread_limit=os.environ.get('OMP_THREAD_LIMIT'))]
+    _provenance(out, 'E', dict(checks=all_checks, runs=runs, block_factors=BLOCK_FACTORS, thr_factors=THR_FACTORS,
+        bases={k: list(v[1]) for k, v in spec.items()}))
 
 
 def _interp_pairs(points: pd.DataFrame, pairs: Dict[str, pd.Series], x: float) -> Tuple[pd.Series, float, bool]:
