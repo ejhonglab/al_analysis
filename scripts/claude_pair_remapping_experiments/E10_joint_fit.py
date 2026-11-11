@@ -139,6 +139,14 @@ Every evaluation records apl_class_<mse, rmse, floor>, the model's mean per-clas
 errors apl_class_err_<class>, and the pseudo-recordings' APL-effect loss (apl_class_noisy_<rmse, mean, pattern>) and
 response rates. Off by default (the fits as before); recorded in fits.csv (apl_class_term, apl_class_form) and the tag
 (apl<readout>cls_ for the squared form, apl<readout>clslin_ for the linear one).
+The units of the KC data in the two-spike rate terms (Tom, 2026-11-10 16:10: the realism bands compare the model's
+two-spike responses with the KC data in baseline-noise units): `--band-units noise` takes the per-odor response rates
+of the po_on / po_off terms and of the ratio target, the ratio wall (with --loss apl) and the odors-per-KC term's
+reference (--apl-opk-term) from the registry's noise_* entries (each KC's responses in units of its baseline noise,
+above noise_threshold) instead of Yang's z units (trial mean > 1 z); the APL-on rate target (--rate-target) is
+unchanged, since both thresholds hold the control flies at their rate. Not with --rate-criterion zcell, whose data
+side is the reading's (Yang's z). Default `z`, the fits as before; recorded in fits.csv (band_units) and the tag
+(prefix nu_) only when noise. The response rate ρ in fits.csv (spearman_rate_on_vs_data) stays against Yang's z units.
 """
 from __future__ import annotations
 
@@ -573,6 +581,10 @@ LOSS_VARIANTS = ('base', 'structure', 'rho', 'apl')
 APL_CLASS_WEIGHT = 1.0
 # its forms: 'sq' apl_class_mse / floor ** 2 (as first specified), 'lin' apl_class_rmse / floor (the APL term's form)
 APL_CLASS_FORMS = ('sq', 'lin')
+# the units of the KC data in the two-spike rate terms: Yang's whole-recording z (above 1 z; the default, every fit
+# until 2026-11-10) or baseline-noise units (above the registry's noise_threshold; the realism bands' data side since
+# Tom's decision of 2026-11-10 16:10)
+BAND_UNITS = ('z', 'noise')
 
 
 def loss_weights(variant: str) -> dict:
@@ -722,7 +734,7 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     jitter_terms: str = 'block', jitter_trials: Optional[int] = None, proxy: Optional[dict] = None,
     variant: Optional[str] = None, apl_readout: str = 'cal', apl_pattern_only: bool = False,
     apl_block_term: bool = False, apl_opk_term: bool = False, rate_criterion: str = 'spikes',
-    zcell: Optional[dict] = None, apl_class_term: bool = False, apl_class_form: str = 'sq'):
+    zcell: Optional[dict] = None, apl_class_term: bool = False, apl_class_form: str = 'sq', band_units: str = 'z'):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). `variant` names the
     weight set (`loss_weights`; default 'structure' with `structure=True`, else 'base'); 'rho' (E63) computes
     the structure statistics but weights only the two matrix terms, the rates, the operating point and the
@@ -760,6 +772,13 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     recorded as apl_class_*. `apl_class_form` (one of APL_CLASS_FORMS): 'sq' (default) is that squared form, 'lin' the
     form of the APL term, apl_class_rmse over the floor; anything but 'sq' needs `apl_class_term`.
 
+    `band_units` (`BAND_UNITS`): 'z' (default) takes the KC data of the two-spike rate terms in Yang's z units
+    (`data_rates`, the registry's rate_ratio_fraction interval and tnt_odors_per_kc_*); 'noise' replaces `data_rates`
+    (the po_on / po_off terms and the ratio target) with the per-odor rates in baseline-noise units (the registry's
+    noise_<ctrl|tnt>_frac_<odor>), the ratio wall with noise_rate_ratio_fraction's interval and the odors-per-KC
+    term's reference with noise_tnt_odors_per_kc_* (not with `rate_criterion` 'zcell', whose data side is the
+    reading's).
+
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
     same residual in Remy's wild-type somata; data 0.82), the natural-source alignment of
@@ -784,6 +803,14 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     n_trials = int(jitter_trials) if jitter_trials else int(jitter_k)
     if jitter_k and (n_trials < 1 or jitter_k % n_trials):
         raise ValueError(f'jitter_trials {jitter_trials} must divide jitter_k {jitter_k}')
+    if band_units not in BAND_UNITS:
+        raise ValueError(f'{band_units=} not in {BAND_UNITS}')
+    if band_units == 'noise':
+        if rate_criterion == 'zcell':
+            raise ValueError("band_units 'noise' is for the two-spike rate terms; rate_criterion 'zcell' reads the data in z units")
+        from apl_effect_scores import frac_data
+        data_rates = {'TNT3c': frac_data('on', 'noise'), 'TNT': frac_data('off', 'noise')}
+    band_prefix = 'noise_' if band_units == 'noise' else ''
     ratio_target = float(data_rates['TNT'].reindex(H.APL16_ODORS).mean() /
         data_rates['TNT3c'].reindex(H.APL16_ODORS).mean())
     if variant is None:
@@ -805,8 +832,8 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         apl_floor = H.data_target('apl_effect_rmse_floor')
         apl_data = H.yang_apl_effect()
         cal_target = H.data_target('ctrl_participation_ratio_resp')
-        ratio_lo, ratio_hi = H.data_target_ci('rate_ratio_fraction')
-        opk_data = np.array([H.data_target(f'tnt_odors_per_kc_{b}') for b in OPK_BINS])
+        ratio_lo, ratio_hi = H.data_target_ci(f'{band_prefix}rate_ratio_fraction')
+        opk_data = np.array([H.data_target(f'{band_prefix}tnt_odors_per_kc_{b}') for b in OPK_BINS])
         use_zcell = apl_readout == 'zcell' or rate_criterion == 'zcell'
         if use_zcell:
             import E73_per_kc_normalization as E73
@@ -974,6 +1001,9 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         loss_fn.apl.update(class_term=dict(weight=APL_CLASS_WEIGHT, form=apl_class_form, floor=float(class_floor),
             n_recordings=E74.N_RECORDINGS, n_trials=E74.N_TRIALS, seed=E74.SEED, classes=list(E74.CLASSES)))
     loss_fn.apl_class_term = bool(apl_class_term)
+    if apl and band_units != 'z':
+        loss_fn.apl.update(band_units=band_units)
+    loss_fn.band_units = band_units
     # (E73 part C) the reading's settings, or None; the held calibration ('calibrate' 'start'; cleared per fit)
     loss_fn.zcell = zcell if use_zcell else None
     loss_fn.zcell_held = held
@@ -1262,6 +1292,11 @@ def main() -> None:
         "the per-odor rate terms and the odors-per-KC term: 'spikes' (the model's two-spike responses, as before) or "
         "'zcell' (the data's criterion, trial mean > 1 z, under the per-KC session z-score reading; needs "
         "--rate-target ctrl_frac); tag prefix zc...rate_")
+    ap.add_argument('--band-units', choices=list(BAND_UNITS), default='z',
+        help="the units of the KC data in the two-spike rate terms: 'z' (default; Yang's whole-recording z, above 1 z, as "
+        "every fit until 2026-11-10) or 'noise' (each KC's responses in units of its baseline noise, above the registry's "
+        "noise_threshold: the realism bands' data side since 2026-11-10 16:10): the per-odor rate terms and the ratio "
+        "target, the ratio wall and the odors-per-KC term's reference (not with --rate-criterion zcell); tag prefix nu_")
     ap.add_argument('--zcell-q', default=None, metavar='Q',
         help="with a zcell option: the share of the session inside the response windows (a number or a data-target "
         "registry key; default zcell_q_window, Yang's APL16 recordings' 0.128); tag part -q<Q> when not the default")
@@ -1478,6 +1513,9 @@ def main() -> None:
     if args.apl_class_form is not None and not args.apl_class_term:
         ap.error('--apl-class-form needs --apl-class-term')
     class_form = args.apl_class_form or 'sq'
+    if args.band_units == 'noise' and args.rate_criterion == 'zcell':
+        ap.error("--band-units noise is for the two-spike rate terms; --rate-criterion zcell reads the data in Yang's z units")
+    band_tag = 'nu_' if args.band_units == 'noise' else ''
     zcell, zcell_tag = None, ''
     if use_zcell:
         q_window = H.data_target('zcell_q_window')
@@ -1500,7 +1538,13 @@ def main() -> None:
         jitter_trials=args.jitter_trials, proxy=proxy,
         **(dict(apl_readout=args.apl_readout, apl_pattern_only=args.apl_pattern_only, apl_block_term=args.apl_block_term,
             apl_opk_term=args.apl_opk_term, rate_criterion=args.rate_criterion, zcell=zcell,
-            **(dict(apl_class_term=True, apl_class_form=class_form) if args.apl_class_term else {})) if args.loss == 'apl' else {}))
+            **(dict(apl_class_term=True, apl_class_form=class_form) if args.apl_class_term else {})) if args.loss == 'apl' else {}),
+        band_units=args.band_units)
+    if args.band_units == 'noise':
+        print(f"KC data of the two-spike rate terms in baseline-noise units (above {H.data_target('noise_threshold'):.4f}): "
+            f"ratio target {loss_fn.ratio_target:.3f}"
+            + (f", ratio wall {loss_fn.apl['ratio_wall'][0]:.3f}-{loss_fn.apl['ratio_wall'][1]:.3f}" if loss_fn.apl is not None else ''),
+            flush=True)
     if loss_fn.apl is not None:
         print(f"APL-effect loss: readout {args.apl_readout}{', pattern part only' if args.apl_pattern_only else ''}"
             f"{', block under the readout' if args.apl_block_term else ''}{', odors per KC with APL off' if args.apl_opk_term else ''}; "
@@ -1571,7 +1615,7 @@ def main() -> None:
         loss_tag = (f'apl{args.apl_readout}' + ('pat' if args.apl_pattern_only else '') + ('blk' if args.apl_block_term else '')
             + ('opk' if args.apl_opk_term else '') + (('cls' + ('' if class_form == 'sq' else class_form)) if args.apl_class_term else '')
             + '_')
-    prefix = zcell_tag + {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
+    prefix = zcell_tag + band_tag + {'spikes': 'spk_', 'spikes_only': 'spko_'}.get(args.apl_drive, '') + ('' if args.claw_thr is None else f'thr{args.claw_thr:g}_') + wiring_tag + (
         '' if gain is None else f'gain{gain:g}_') + rate_tag + block_tag + loss_tag + kckc_tag + kc_tag + thrin_tag + proxy_tag + jit_tag
     jit_factors, jit_meta = None, {}
     if jit_k > 0:
@@ -1665,6 +1709,8 @@ def main() -> None:
                 apl_opk_term=args.apl_opk_term) if args.loss == 'apl' else {}),
             # (E74 part C: the class-resolved term and its form; absent when not used)
             **(dict(apl_class_term=True, apl_class_form=class_form) if args.apl_class_term else {}),
+            # (the KC data's units in the two-spike rate terms; absent when Yang's z, the default)
+            **(dict(band_units=args.band_units) if args.band_units != 'z' else {}),
             # (E73 part C: the per-KC session z-score reading's settings; absent when not used)
             **(dict(rate_criterion=args.rate_criterion, zcell_q=loss_fn.zcell['q'], zcell_map=loss_fn.zcell['amp'],
                 zcell_calibrate=loss_fn.zcell['calibrate'], zcell_drift=loss_fn.zcell['drift'])
