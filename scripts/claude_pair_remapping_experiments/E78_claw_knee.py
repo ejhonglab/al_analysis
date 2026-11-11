@@ -26,12 +26,14 @@ The entry (experiment_priorities.md, item 3; planned by a Fable subagent, claude
 - E (`--part E`): every fit and gate point under the per-KC reading (E73's scorer), the release by claw count.
 - summarize (`--part summarize`): comparison_table.md and the figures.
 
-Part C's model (`KneeModel`): the start rebuilt as E10_joint_fit.py built it (E43_model_trial_noise.fit_model; its spike
-counts must equal its saved ones), the transfer as model kwargs (claw_thr, claw_thr_subgain, claw_thr_width; the
-odor-relative knee as ext_inh_bouton), the breadth weights from E10's `transfer_prepass` on the plain bouton base (E3's
-tuned parameters on the start's wiring, APL off, with the transfer, its threshold re-tuned to the transfer-free run's
-APL-off response count; at the identity C2's breadth exactly), then the two-rate hold. The 'identity' point is the start
-itself, scored the same way, and every gate comparison is against it.
+Part C's model (`KneeModel`): the start on E77's fixed-scale runner (E77_input_screen's `build_c2_simulator` and
+`hold_rates`, the start's parameters, wiring and firing ceiling; checked to reproduce the start's saved spike counts),
+the transfer as model kwargs (claw_thr, claw_thr_subgain, claw_thr_width; the odor-relative knee as ext_inh_bouton),
+both response rates held with the breadth weights recomputed from the threshold-held APL-off run (breadth_from='held',
+as the entry specifies; KC-KC inhibition included). The 'identity' point is the start itself, against which the gate
+compares; 'identity_held' is the start with only the held breadth, the control for that choice. Part A's and part D's
+E10 fits take their breadth from E10's base instead (E16's base at the knee, its APL-off run at its own tuned threshold,
+with the sub-threshold gain / width re-tuned to that run's response count), so part C and the fits differ in that respect.
 
 Outputs: <shared>/results/E78_claw_knee/ (points/<start>/<point>.json, _pairs.csv, _record.json and provenance_*.json;
 sweep.csv, sweep_pairs.csv, sweep_params.json, stats_variants.csv and model_pair_distances_long.csv built from them;
@@ -538,8 +540,8 @@ def who_selects(out: Path, models: Optional[Sequence[str]] = None) -> pd.DataFra
 
 # ---------------------------------------------------------------------------
 # part C
-THR_BRACKET, THR_STEP = (0.01, 4.0), 1.1
-APL_BRACKET, APL_STEP = (1 / 32, 32.0), 1.25
+# the brackets of E77's runner, widened (a 130 Hz knee takes the somatic threshold to about a tenth)
+THR_BRACKET, APL_BRACKET = (0.01, 4.0), (1 / 32, 32.0)
 COND_FILE = {'on': 'on', 'off': 'acute_off'}
 _CACHE: Dict[object, object] = {}
 
@@ -628,8 +630,8 @@ def point_specs(sweep_df: Optional[pd.DataFrame] = None) -> List[dict]:
     width at the two best of them, once `sweep_df` has them) and C2 (the odor-relative knee at REL_LEVELS); each a dict
     with point_id, family ('identity', 'knee', 'knee_soft', 'rel'), the settings, and 'transfer' (the claw kwargs; the
     odor-relative knee's inhibition matrix is built by KneeModel)."""
-    pts = [dict(point_id='identity', family='identity', claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan,
-        rel=np.nan, transfer={})]
+    pts = [dict(point_id=i, family=i, claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan, rel=np.nan, transfer={})
+        for i in ('identity', 'identity_held')]
     pts += [knee_point(T, g) for T in KNEES for g in SUBGAINS]
     pts += [knee_point(LINK_KNEE, g) for g in LINK_SUBGAINS]
     pts += [dict(point_id=f'rel{lv:g}', family='rel', claw_thr=np.nan, claw_thr_subgain=np.nan, claw_thr_width=np.nan,
@@ -643,22 +645,21 @@ def point_specs(sweep_df: Optional[pd.DataFrame] = None) -> List[dict]:
 
 
 class KneeModel:
-    """A start (STARTS) rebuilt at its fitted parameters as E10_joint_fit.py built it (E43_model_trial_noise.fit_model; its
-    spike counts checked equal to its saved ones), with a transfer set on top (`hold`): the breadth weights recomputed for
-    the transfer (the plain bouton base's APL-off run with the transfer, its threshold re-tuned to the transfer-free run's
-    response count, E10's `transfer_prepass`; at the identity the start's breadth exactly), the somatic threshold factor
-    bisected to the start's APL-off response count, then the APL->KC scale (KC->APL and bouton->APL tied to it, as the
-    fits tie them; APL->bouton unchanged) bisected to the start's APL-on response count (E69's `bisect_factor`)."""
+    """A start (STARTS) at its fitted parameters on E77's fixed-scale runner (E77_input_screen: `build_c2_simulator`, C2's
+    family with the start's parameters, wiring and firing ceiling; `hold_rates`), checked against the start as
+    E10_joint_fit.py built it (E43_model_trial_noise.fit_model) and against its saved spike counts, with a transfer set
+    on top (`hold`): the somatic threshold factor bisected to the start's APL-off response count, the breadth weights
+    recomputed from that threshold-held APL-off run (`breadth_from='held'`, as the entry specifies; KC-KC inhibition
+    included), then the APL->KC scale (KC->APL and bouton->APL tied to it, as the fits tie them; APL->bouton unchanged)
+    bisected to the start's APL-on response count (E69's `bisect_factor`). The start itself is the 'identity' point; the
+    'identity_held' point is the start with only the held breadth (no transfer), the control for that choice."""
 
     def __init__(self, start: str, out_dir: Path):
         import E10_joint_fit as J
         import E43_model_trial_noise as E43
-        from al_analysis.mb_model import make_fixed_param_kc_simulator
+        import E77_input_screen as S
         exp, tag, wiring = STARTS[start]
         self.start, self.exp, self.tag, self.wiring = start, exp, tag, dict(wiring)
-        # the plain base's wiring, which names the pre-pass caches (C2 and fit1 share the real wiring's)
-        self.wiring_name = ('real' if not wiring else (f"{wiring['wiring']}-seed{int(wiring['wiring_seed'])}" if 'wiring' in wiring
-            else wiring['wiring_tag']))
         self.out_dir = out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         self.orn = H.apl16_orn_deltas()
@@ -668,6 +669,10 @@ class KneeModel:
                 'ORN input are not used here')
         self.fm, self.info = fm, fm['info']
         self.p, self.kws, self.k = dict(fm['p_on']), dict(fm['kws']), float(fm['info']['k'])
+        if self.k != S.BREADTH_K or abs(float(self.kws.get('kc_kc_tau', J.TAU)) - J.TAU) > 0:
+            raise NotImplementedError(f"{start}: breadth exponent {self.k} / KC-KC tau {self.kws.get('kc_kc_tau')} differ from C2's")
+        # (the firing ceiling of E69's fits: fixed model kwargs, passed to the runner's simulator with the transfer)
+        self.spiking = {k: self.kws[k] for k in ('kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau') if k in self.kws}
         wk = dict(self.wiring)
         if 'wiring_file' in wk:
             wk = dict(wiring_matrix=pd.read_parquet(H.shared_dir() / wk['wiring_file']), wiring_tag=wk['wiring_tag'])
@@ -675,10 +680,10 @@ class KneeModel:
         w0 = J.breadth_weights(self.wnorm['wAPLKC'], self.breadth0, self.k)
         if not np.array_equal(np.asarray(w0, dtype=float), np.asarray(self.kws['_wAPLKC'], dtype=float)):
             raise RuntimeError(f"{start}: the breadth weights rebuilt here differ from fit_model's")
-        self.plain_kws = dict(J.base_kws(None), **({'_wPNKC': self.W} if self.wiring else {}))
-        sim, _ = make_fixed_param_kc_simulator(self.orn, initial_params=self.p, **self.kws)
+        self.wPNKC = self.W if self.wiring else None
+        sim, info = S.build_c2_simulator(self.spiking or None, wPNKC=self.wPNKC, breadth=self.breadth0, params=self.p)
         on, off = sim(self.p), sim(self.off(self.p))
-        del sim
+        del sim, info
         self.check = {}
         for c, (r, s) in (('on', on), ('acute_off', off)):
             paths = fm['saved'][c]
@@ -689,34 +694,18 @@ class KneeModel:
             n = int((ss.to_numpy() != sa.to_numpy()).sum()) if ss.shape == sa.shape else -1
             self.check[f'{c}_spike_count_mismatch'] = n
             if n != 0 or not ss.index.equals(s.index):
-                raise RuntimeError(f'{start}: the rebuilt {c} run differs from its saved spike counts in {n} entries')
+                raise RuntimeError(f"{start}: E77's runner at the start's parameters differs from its saved {c} spike counts in "
+                    f'{n} entries')
         self.ref = {'on': on, 'off': off}
-        self.n_on = int(on[0].to_numpy(dtype=float).sum())
-        self.n_off = int(off[0].to_numpy(dtype=float).sum())
+        self.n_on = int((on[0].to_numpy(dtype=float) > 0.5).sum())
+        self.n_off = int((off[0].to_numpy(dtype=float) > 0.5).sum())
         self.size = int(on[0].size)
-        self._base_off = None
-        print(f'{start}: rebuilt {exp}:{tag}, spike counts equal to the saved ones; {self.n_on} APL-on and {self.n_off} APL-off '
+        print(f'{start}: {exp}:{tag} on E77\'s runner reproduces its saved spike counts; {self.n_on} APL-on and {self.n_off} APL-off '
             f'responses of {self.size}', flush=True)
 
     @staticmethod
     def off(p: dict) -> dict:
         return dict(p, wAPLKC_scale=0.0, wAPLPN_scale=0.0)
-
-    def base_off_spk(self) -> pd.DataFrame:
-        """The plain base's APL-off run at its tuned parameters (the run the breadth comes from), simulated and checked
-        against the breadth."""
-        if self._base_off is None:
-            import E10_joint_fit as J
-            from al_analysis.mb_model import make_fixed_param_kc_simulator
-            p0 = {k: float(self.initial[k]) for k in J.PARAM_KEYS}
-            sim, _ = make_fixed_param_kc_simulator(self.orn, initial_params=p0, **self.plain_kws)
-            _, s0 = sim(self.off(p0))
-            del sim
-            b = s0.astype(float).sum(axis='columns').to_numpy()
-            if not np.array_equal(b, self.breadth0.to_numpy(dtype=float)):
-                raise RuntimeError(f'{self.start}: the plain base\'s APL-off run does not reproduce the breadth')
-            self._base_off = s0
-        return self._base_off
 
     def transfer_kws(self, pt: dict, orn: Optional[pd.DataFrame] = None) -> dict:
         """The point's model kwargs on the ORN input `orn` (default the APL16 input): the claw kwargs, or the
@@ -727,59 +716,43 @@ class KneeModel:
             return dict(ext_inh_bouton=odor_relative_inhibition(self.W, orn, top, pt['rel']))
         return dict(pt['transfer'])
 
-    def point_kws(self, pt: dict, orn: Optional[pd.DataFrame] = None) -> Tuple[dict, Optional[dict], pd.Series]:
-        """(simulator kwargs, pre-pass record or None, breadth) of point `pt`: the start's kwargs with the breadth
-        weights of the transfer's pre-pass (on the APL16 input, cached by point id) and the transfer on `orn`."""
+    def breadth_path(self, pt: dict) -> Path:
+        return c_outputs_dir() / f"{self.start}_{pt['point_id']}_breadth.parquet"
+
+    def point_kws(self, pt: dict, orn: Optional[pd.DataFrame] = None) -> dict:
+        """The simulator kwargs of a held point (`hold` must have run; for E49's extended input in `low_conc`): the
+        start's kwargs with the point's held breadth (saved by `hold`; the start's own for 'identity') and its transfer
+        on `orn`."""
         import E10_joint_fit as J
-        transfer = self.transfer_kws(pt)
-        rec = None
-        if transfer:
-            info = {}
-            spk = J.transfer_prepass(self.orn, self.plain_kws, self.initial, self.base_off_spk(), transfer,
-                self.out_dir / f'{self.wiring_name}_plain_base_acute_off_spike_counts.parquet', info, label=pt['point_id'])
-            breadth = pd.Series(spk.astype(float).sum(axis='columns').to_numpy(), index=spk.index.get_level_values(H.KC_ID_LEVEL))
-            rec = info['claw_transfer_prepass']
-        else:
+        if pt['point_id'] == 'identity':
             breadth = self.breadth0
-        if orn is not None and orn is not self.orn:
-            transfer = self.transfer_kws(pt, orn)
-        kws = dict(self.kws, _wAPLKC=J.breadth_weights(self.wnorm['wAPLKC'], breadth, self.k), **transfer)
-        return kws, rec, breadth
+        else:
+            b = pd.read_parquet(self.breadth_path(pt))
+            breadth = pd.Series(b['breadth'].to_numpy(dtype=float), index=b.index)
+        return dict(self.kws, _wAPLKC=J.breadth_weights(self.wnorm['wAPLKC'], breadth, self.k), **self.transfer_kws(pt, orn))
 
     def hold(self, pt: dict) -> Tuple[dict, Dict[str, tuple], dict]:
-        """(absolute parameters, {'on': (responses, spike counts), 'off': ...}, record of the pre-pass and the bisections) of
-        the start with point `pt`'s transfer."""
-        import gc
-        import time
-        import E10_joint_fit as J
-        from al_analysis.mb_model import make_fixed_param_kc_simulator
-        from E69_kc_firing_ceiling import bisect_factor
-        t0 = time.time()
+        """(absolute parameters, {'on': (responses, spike counts), 'off': ...}, record of the bisections) of the start with
+        point `pt`'s transfer, on E77's `hold_rates` with breadth_from='held'; the held breadth is saved
+        (`breadth_path`)."""
+        import E77_input_screen as S
         label = f"{self.start}_{pt['point_id']}"
-        rec = dict(point_id=pt['point_id'], start=self.start)
-        kws, prepass, breadth = self.point_kws(pt)
-        if prepass is not None:
-            rec['prepass'] = prepass
-        sim, _ = make_fixed_param_kc_simulator(self.orn, initial_params=self.p, **kws)
-        p0 = dict(self.p)
-        f, off_out, h1, b1 = bisect_factor(lambda x: sim(self.off(dict(p0, fixed_thr=p0['fixed_thr'] * x))), self.n_off,
-            self.size, THR_BRACKET, THR_STEP, f'{label} threshold factor (APL off)')
-        p1 = dict(p0, fixed_thr=p0['fixed_thr'] * f)
-        tied = ('wAPLKC_scale', 'wKCAPL_scale', 'wPNAPL_scale')
-        x, on_out, h2, b2 = bisect_factor(lambda y: sim(dict(p1, **{k: p0[k] * y for k in tied})), self.n_on, self.size,
-            APL_BRACKET, APL_STEP, f'{label} APL factor (APL on)')
-        p = dict(p1, **{k: p0[k] * x for k in tied})
-        del sim
-        gc.collect()
-        rec.update(thr_factor=float(f), apl_factor=float(x), thr_at_bound=bool(b1), apl_at_bound=bool(b2),
-            n_responses_on=int(on_out[0].to_numpy(dtype=float).sum()), n_responses_off=int(off_out[0].to_numpy(dtype=float).sum()),
-            target_n_on=self.n_on, target_n_off=self.n_off, n_sims=len(h1) + len(h2), seconds=time.time() - t0,
-            bisections=h1 + h2, breadth_sha256=_sha(breadth.to_numpy(dtype=float)),
-            breadth_corr_vs_start=float(np.corrcoef(breadth.to_numpy(dtype=float), self.breadth0.to_numpy(dtype=float))[0, 1]))
+        extra = dict(self.transfer_kws(pt), **self.spiking)
+        res = S.hold_rates(lambda: S.build_c2_simulator(extra or None, wPNKC=self.wPNKC, breadth=self.breadth0, params=self.p),
+            target_off=self.n_off, target_on=self.n_on, params=self.p, breadth_from='held', label=label,
+            thr_bracket=THR_BRACKET, apl_bracket=APL_BRACKET)
+        breadth = res['breadth']
+        breadth.rename('breadth').to_frame().to_parquet(self.breadth_path(pt))
+        rec = dict(point_id=pt['point_id'], start=self.start, breadth_from='held', thr_factor=res['thr_factor'],
+            apl_factor=res['apl_factor'], thr_at_bound=res['at_bound_thr'], apl_at_bound=res['at_bound_apl'],
+            n_responses_on=res['n_on'], n_responses_off=res['n_off'], target_n_on=res['target_on'], target_n_off=res['target_off'],
+            n_sims=res['n_sims'], seconds=res['seconds'], bisections=res['history'], breadth_sha256=res['breadth_sha256'],
+            breadth_corr_vs_start=float(np.corrcoef(breadth.reindex(self.breadth0.index).to_numpy(dtype=float),
+                self.breadth0.to_numpy(dtype=float))[0, 1]), runner_kws=res['kws'])
         if pt['family'] == 'rel':
             top = largest_bouton_rates(self.start)
             rec['rel_level_hz'] = {o: float(pt['rel'] * top[o]) for o in H.APL16_ODORS}
-        return p, {'on': on_out, 'off': off_out}, rec
+        return dict(res['params']), {'on': res['on'], 'off': res['off']}, rec
 
 
 def _sha(x: np.ndarray) -> str:
@@ -922,7 +895,7 @@ def sweep(out: Path, start: str = 'C2', only: Optional[Sequence[str]] = None) ->
             if pt['point_id'] == 'identity':
                 p, o, rec = dict(model.p), model.ref, dict(point_id='identity', start=start, thr_factor=1.0, apl_factor=1.0,
                     thr_at_bound=False, apl_at_bound=False, n_responses_on=model.n_on, n_responses_off=model.n_off,
-                    target_n_on=model.n_on, target_n_off=model.n_off, n_sims=0, bisections=[])
+                    target_n_on=model.n_on, target_n_off=model.n_off, n_sims=0, bisections=[], breadth_from='start')
             else:
                 try:
                     p, o, rec = model.hold(pt)
@@ -940,7 +913,8 @@ def sweep(out: Path, start: str = 'C2', only: Optional[Sequence[str]] = None) ->
                 rel=pt['rel'], k=model.k, kc_kc_tau=float(model.kws.get('kc_kc_tau', np.nan)),
                 **{kk: float(v) for kk, v in p.items()}, kc_kc_inh=float(p['wKCKC_scale']),
                 **{kk: model.kws[kk] for kk in ('kc_refractory_period', 'kc_adapt_inc', 'kc_adapt_tau') if kk in model.kws},
-                **{kk: v for kk, v in rec.items() if kk not in ('bisections', 'prepass', 'rel_level_hz', 'point_id', 'start')},
+                **{kk: v for kk, v in rec.items() if kk not in ('bisections', 'prepass', 'rel_level_hz', 'point_id', 'start',
+                    'runner_kws')},
                 **({f'prepass_{kk}': rec['prepass'][kk] for kk in ('thr_factor', 'fixed_thr', 'n_responses', 'target_n_responses')}
                     if 'prepass' in rec else {}),
                 top_bouton_rate_max=float(largest_bouton_rates(start).max()) if pt['family'] in ('knee', 'knee_soft') else np.nan,
@@ -1025,7 +999,7 @@ def aggregate(out: Path) -> pd.DataFrame:
 def best_points(sweep_df: pd.DataFrame, n: int = N_BEST, start: str = 'C2') -> List[str]:
     """The n best points of the sweep on `start` by the readout loss among those inside the bands (16:10 rule; all
     non-identity points if fewer than n are inside)."""
-    d = sweep_df[(sweep_df.start == start) & (sweep_df.point_id != 'identity')]
+    d = sweep_df[(sweep_df.start == start) & ~sweep_df.point_id.isin(['identity', 'identity_held'])]
     ok = d[d.realism_flag_noise.fillna('') == '']
     pick = ok if len(ok) >= n else pd.concat([ok, d[~d.index.isin(ok.index)].sort_values('cal_loss')])
     return list(pick.sort_values('cal_loss').point_id.head(n)) if len(ok) >= n else list(pick.point_id.head(n))
@@ -1060,7 +1034,7 @@ def low_conc(out: Path, point_ids: Sequence[str], start: str = 'C2') -> pd.DataF
             continue
         p = {k: float(v) for k, v in params[tag].items() if k in ('fixed_thr', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale',
             'wPNAPL_scale', 'wKCKC_scale')}
-        kws, _, _ = model.point_kws(specs[pid], orn)
+        kws = model.point_kws(specs[pid], orn)
         sim, _ = make_fixed_param_kc_simulator(orn, initial_params=p, **kws)
         det = {'on': sim(p), 'acute_off': sim(model.off(p))}
         del sim
@@ -1325,15 +1299,24 @@ def d_heldout(out: Path, point_id: str) -> pd.DataFrame:
     pm = {k: float(f[k].mean()) for k in keys}
     pm['wKCKC_scale'] = float(f['kc_kc_inh'].mean())
     spec = {p['point_id']: p for p in point_specs(aggregate(out))}[point_id]
+    import E10_joint_fit as J
+    T = float(spec['claw_thr'])
+    transfer = J.claw_transfer_kws(spec['claw_thr_subgain'] or None, spec['claw_thr_width'] or None)
     rows, fits = [], []
+    orn = H.apl16_orn_deltas()
     for start in HELD_OUT:
-        model = KneeModel(start, H.outputs_dir(EXPERIMENT) / 'C' / 'bases')
-        kws, _, _ = model.point_kws(spec)
-        kws['kc_kc_inh'] = pm['wKCKC_scale']
-        sim, _ = make_fixed_param_kc_simulator(model.orn, initial_params=pm, **kws)
-        o = {'on': sim(pm), 'off': sim(model.off(pm))}
+        # the model as E10_joint_fit.py would build it for this wiring with the transfer (its base and pre-pass)
+        w = dict(STARTS[start][2])
+        if 'wiring_file' in w:
+            w = dict(wiring_matrix=pd.read_parquet(H.shared_dir() / w['wiring_file']), wiring_tag=w['wiring_tag'])
+        _, wnorm, W, breadth = J.bouton_base(orn, H.outputs_dir(EXPERIMENT) / 'C' / 'bases', T, claw_transfer=transfer or None, **w)
+        kws = dict(J.base_kws(T, transfer=transfer or None), _wPNKC=W, _wAPLKC=J.breadth_weights(wnorm['wAPLKC'], breadth, 2.0),
+            _wKCAPL=wnorm['wKCAPL'], _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=pm['wKCKC_scale'], kc_kc_tau=J.TAU)
+        sim, _ = make_fixed_param_kc_simulator(orn, initial_params=pm, **kws)
+        o = {'on': sim(pm), 'off': sim(KneeModel.off(pm))}
         del sim
-        row, _ = score_point(o, model.ref)
+        ref = E72.load_fit(*STARTS[start][:2])
+        row, _ = score_point(o, ref)
         rows.append(dict(start=start, point_id=point_id, **pm, **row))
         fits.append(o)
         print(f"held out {start}: readout loss {row['cal_loss']:.4f}, raw {row['raw_loss']:.4f}", flush=True)
@@ -1455,6 +1438,12 @@ def summarize(out: Path) -> None:
         "E72's re-drawn wirings) and each point on it. Lower is better for the losses; the floor of the APL-effect loss is "
         f"{H.data_target('apl_effect_rmse_floor'):.3f}. Six pairs: eb-ep, 6al-t2h, IaA-pa, 2h-pa, 1-5ol-1-6ol, 2h-IaA (raw counts; "
         f'the KC data\'s APL effect +{data_six:.3f}). Bands: the 16:10 rule (two spikes against the KC data in baseline-noise units).', '',
+        "Breadth: every point but 'identity' takes the breadth weights from its own threshold-held APL-off run (E77's runner, "
+        "breadth_from='held', KC-KC inhibition included), as the entry specifies; 'identity' is the start itself (its breadth from "
+        "the bouton base's APL-off run at E3's threshold), and 'identity_held' the start with only the held breadth, the control "
+        "for that choice. Part A's E10 fits at 100 / 130 Hz (and part D's) take their breadth from E16's knee base instead (its "
+        "APL-off run at its own tuned threshold; with a sub-threshold gain or width, that run's threshold re-tuned to its "
+        "response count), so part C and the fits differ in that respect.", '',
         '| start | point | knee (Hz) | g | width | rel | readout loss | pattern part | raw loss | raw mean | ρ on the per-pair APL effect '
         '(readout) | six pairs, APL on / off (raw) | six pairs\' APL effect (raw) | ester group error | alcohol group error | '
         'response rate, APL on / off | response rate ρ, APL on | silent odors (on / off) | bands |',

@@ -211,7 +211,7 @@ def test_gate_selects(tmp_path):
 def test_point_specs():
     pts = E78.point_specs()
     ids = [p['point_id'] for p in pts]
-    assert ids[0] == 'identity' and len(ids) == len(set(ids)) == 1 + 12 + 2 + 3
+    assert ids[:2] == ['identity', 'identity_held'] and len(ids) == len(set(ids)) == 2 + 12 + 2 + 3
     assert 'knee115_g0.5' in ids and 'knee70_g0.25' in ids and 'rel0.85' in ids
     k = next(p for p in pts if p['point_id'] == 'knee130_g0')
     assert k['transfer'] == {'claw_thr': 130.0}
