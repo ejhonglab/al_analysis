@@ -1053,6 +1053,7 @@ Canonical experiment names for summary reports:
 | E79 | the APL calyx maps against the connectome |
 | E80 | the flies' pulse in the model and the remaining candidates for the common error |
 | E81 | the flies' variability across the three repeats |
+| E82 | the flies' recording protocol in the model |
 
 ## Model-output archive (data/model_outputs/ in the shared directory)
 

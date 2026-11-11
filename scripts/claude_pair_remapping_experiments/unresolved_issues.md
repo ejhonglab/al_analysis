@@ -8,6 +8,21 @@ directory's notes/ and are linked from here.
 
 ## Open
 
+### The raw-count readings of the main target are tied to the model's 0.5 s odor pulse; the flies had 2 s (found 2026-11-11 02:37, viki, E80)
+- **What.** Every model number compares spike counts of a 0.5 s pulse, counted to 0.75 s, with the flies' calcium signal 2 to 8 s
+  after the onset of a 2 s pulse. With the flies' pulse (E80, both response rates re-held, parameters fitted at 0.5 s), C2's
+  APL-effect loss on raw counts rises from 0.093 to 0.146 and its mean APL effect falls from +0.120 to +0.061 (the flies' +0.178):
+  the model's APL nearly silences the response after 0.5 s, so a longer pulse adds APL-off spikes almost only. Under the calibrated
+  readout C2 is nearly unchanged (0.056 to 0.058), but the firing-ceiling fit's readout sits at its bound (linear), so it moves as
+  raw counts do (0.050 to 0.061).
+- **Affects.** Every raw-count number of the main target in the notes and the summary (the mean APL effect on raw counts, the
+  firing ceiling's gain on raw counts, the comparison with the effect in baseline-noise units, the progress plot's raw-count series).
+- **Done.** E80's note and the summary ({#remaining-candidates}, pointers from {#firing-ceiling}, {#data-side}, {#readout},
+  {#apl-effect}) say so.
+- **Remains.** The flies' recording protocol in the model (E82, viki) reads the best families at the flies' pulse and window and
+  looks for what holds the late response; whether the main target's raw-count numbers are repeated at the flies' pulse is for
+  planning and Tom.
+
 ### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
 - **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds
   nothing to the dot product between different odors. In the recordings two different odors of the same repeat of the panel are more alike
