@@ -1075,7 +1075,7 @@ def plot_coloc(Cs: dict, glomeruli: List[str], names: List[str], proxy: pd.DataF
     for k, c in enumerate(names):
         ax = axes.flat[k]
         C = Cs[(c, lam)][np.ix_(order, order)]
-        ax.imshow(np.log10(np.maximum(C, 1e-6)), cmap='viridis', vmin=-4, vmax=0)
+        im = ax.imshow(np.log10(np.maximum(C, 1e-6)), cmap='viridis', vmin=-4, vmax=0)
         ax.set_title(f'{c}', fontsize=7)
         ax.set_xticks(range(len(order)))
         ax.set_xticklabels([glomeruli[i] for i in order], rotation=90, fontsize=3.5)
@@ -1086,6 +1086,7 @@ def plot_coloc(Cs: dict, glomeruli: List[str], names: List[str], proxy: pd.DataF
     fig.suptitle(f'Glomerulus co-localization C (log10), lambda {lam:g} um; glomeruli in the consensus\'s cluster order',
                  fontsize=9)
     fig.tight_layout()
+    fig.colorbar(im, ax=list(axes.flat), shrink=0.5, label='log10 C')
     fig.savefig(OUT / 'E79_coloc_matrices.png', dpi=150)
     plt.close(fig)
     b = proxy.loc[proxy['loo_share'].idxmax()]
