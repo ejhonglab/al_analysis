@@ -18,10 +18,17 @@ directory's notes/ and are linked from here.
   Realism sections of the per-experiment notes, the summary's best-models realism row and the "Realism flag:" posts), most visibly the
   reference model's and its fits' APL-off odors-per-KC flags (0.200-0.212 against 0.196).
 - **Done.** Tom's decision (CLAUDE.md, "The main goal for new experiments"; notes/response_criterion_decision.md): the data side in
-  baseline-noise units (threshold 1.97 noise SDs). Code being written by an Opus code subagent of hal's session (registry entries,
-  `apl_effect_scores.py` with the old flag kept as `realism_flag_zcrit`, a switch in E10_joint_fit.py, E73's tables).
-- **Remains.** The code; the archive re-scored; the summary's realism row and a footnote; earlier notes annotated (not rerun) where a
-  flag changes.
+  baseline-noise units (threshold 1.97 noise SDs). The code (cbdebc2: 54 `noise_*` registry entries, `apl_effect_scores.py`'s new
+  `realism_flag` with the old one kept as `realism_flag_zcrit`, E73's fixed-unit columns, the progress plot's filter; 5100063: E10's
+  `--band-units noise`), by an Opus code subagent of hal's session. The archive re-scored (results/apl_effect/by_variant.csv, 2026-11-10
+  16:3x): 423 of 916 variants flagged under the new rule against 604 under the old (24 newly flagged, 205 cleared); 3 of the summary's 14
+  best-models columns against 10. The summary's footnote on baseline-noise units, the band paragraph, its table and the best-models
+  realism rows (e83c8bb). E73's note reports both rules.
+- **Remains.** The summary template's other band rows and prose (rows that pair the re-scored, noise-unit distances with the z-unit
+  bands, and experiments' own z-unit tables; a planning subagent of hal's is on it), then a rebuild; earlier notes annotated (not
+  rerun) where a flag changes (E44, E45, E64, E66, E67, E69, E70, E71, E72, E74, E75 Realism sections); whether the response rate ρ
+  band is re-anchored on the reference model's ρ in noise units (0.55, giving 0.45 instead of 0.37), Tom's call. Hosts running
+  build_summary.py or apl_effect_scores.py from code older than cbdebc2 rewrite by_variant.csv with the old flags (chat 16:39).
 
 ### The KC data's amplitudes and response criterion are relative to each cell's whole-recording spread (found 2026-11-10, hal's planning subagent; confirmed by Yang)
 - **What.** Yang's per-trial KC values (files suffixed `zscored_full`) look z-scored per cell over the whole recording, not against a
@@ -39,8 +46,13 @@ directory's notes/ and are linked from here.
   2-8 s after onset minus the mean over the 5 s before (add_to_reports/yang_response_definition.md, viki; a z unit is 1.4-3.0 baseline-noise
   SDs, rising with the KC's breadth). The per-KC normalization of the recordings (E73) is claimed by hal to read every archived model the
   same way (part B).
-- **Remains.** E73's parts A and B; re-reading or annotating the affected outputs (E65, E68, E69 amplitudes and bands; E49 and E72's part F
-  fractions) once E73 has read the models the same way; the un-normalized per-trial responses wait on Yang's OK.
+- **Done (E73, hal, 2026-11-10).** Parts A to C (E73_per_kc_normalization.md, page https://claude.ai/artifact/5gnZXoz2fkK3oXrUnQZWQU):
+  every archived variant read through the per-KC session z-score (results/E73_per_kc_normalization/by_variant.csv); the best family
+  re-fitted under that reading; the bands' criterion decided by Tom (the entry above). viki's per-KC scales
+  (notes/yang_response_normalization/kc_scales.csv) give every KC's responses in baseline-noise units.
+- **Remains.** Annotating the affected outputs (E65, E68, E69 amplitudes; E49 and E72's part F fractions, which E73 read within their own
+  panel's session) with E73's readings; whether the main target's distances should also be taken in baseline-noise units (E73's next
+  step 4).
 
 ### Experiment provenance records the checkout at the end of a run, not the code that ran (found 2026-11-07, atlas)
 
