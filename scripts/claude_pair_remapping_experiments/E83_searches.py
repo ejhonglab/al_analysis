@@ -279,8 +279,15 @@ def provenance(out: Path, arm: str, half: str, extra: dict) -> None:
 
 
 def _append_csv(path: Path, rows: Sequence[dict]) -> None:
-    if rows:
-        pd.DataFrame(rows).to_csv(path, index=False, mode='a', header=not path.exists())
+    """Append rows to a CSV, rewriting it with the union of the columns (the start row and the generations' rows differ)."""
+    if not rows:
+        return
+    new = pd.DataFrame(rows)
+    if path.exists():
+        new = pd.concat([pd.read_csv(path), new], ignore_index=True, sort=False)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    new.to_csv(tmp, index=False)
+    os.replace(tmp, path)
 
 
 def _trim_csv(path: Path, keep: Callable[[pd.DataFrame], pd.Series]) -> None:
