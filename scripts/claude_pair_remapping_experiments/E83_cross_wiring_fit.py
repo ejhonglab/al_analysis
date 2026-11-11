@@ -713,7 +713,15 @@ def _git_head() -> str:
 
 
 def _append_row(path: Path, row: dict) -> None:
-    pd.DataFrame([row]).to_csv(path, index=False, mode='a', header=not path.exists())
+    """Appends a row; when its columns differ from the file's (A2's check row against its points), the file is
+    rewritten with the union of the columns, so it always reads back."""
+    new = pd.DataFrame([row])
+    if path.exists():
+        old = pd.read_csv(path)
+        if list(old.columns) != list(new.columns):
+            pd.concat([old, new], ignore_index=True, sort=False).to_csv(path, index=False)
+            return
+    new.to_csv(path, index=False, mode='a', header=not path.exists())
 
 
 def _read_rows(path: Path) -> pd.DataFrame:
