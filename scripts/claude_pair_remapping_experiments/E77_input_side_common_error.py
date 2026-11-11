@@ -461,8 +461,50 @@ def archive_input_variants(out: Path) -> pd.DataFrame:
 
 def pn_level(out: Path) -> pd.DataFrame:
     """Part B: the model's PN totals per odor and its PN-level odor-odor distances against the ORN input's and against
-    Remy's PN-bouton and KC-claw matrices (the 66 megamat pairs), per fly where the data allow. Writes pn_level.csv."""
-    raise NotImplementedError
+    Remy's PN-bouton and KC-claw matrices (the 66 megamat pairs), per fly where the data allow. Writes pn_totals.csv
+    (per odor: the ORN input's summed positive deltas and the model's summed PN rates, C2's PN stage, 0-0.5 s) and
+    pn_level.csv (per pair: correlation distances across glomeruli of the ORN input and of the model's PN rates, and
+    Remy's bouton and claw distances (1 - Pearson across ROIs, data/remy_rdm_timeseries/windows/, the 0.5-3 s and
+    0.5-1 s windows), per fly and the fly mean; the megamat odors the APL16 panel shares)."""
+    import json
+    import E77_input_screen as S
+    sim, info = S.build_c2_simulator()
+    runner = S.PerOdorRunner(sim, info)
+    r, _ = sim(dict(info['params'], wAPLKC_scale=0.0, wAPLPN_scale=0.0))
+    rates = runner.pn_rates()
+    rates.columns = list(H.abbrev_columns(r).columns)
+    orn = H.abbrev_columns(H.apl16_orn_deltas().astype(float))
+    tot = pd.DataFrame({'orn_sum_pos': orn.clip(lower=0).sum(), 'orn_sum': orn.sum(), 'pn_sum': rates.sum(),
+                        'pn_mean': rates.mean(), 'pn_max': rates.max()})
+    tot.index.name = 'odor'
+    tot.to_csv(out / 'pn_totals.csv')
+
+    def corrdist(m: pd.DataFrame) -> pd.Series:
+        c = np.corrcoef(m.to_numpy(dtype=float).T)
+        o = list(m.columns)
+        return pd.Series({tuple(sorted((o[i], o[j]))): 1 - c[i, j] for i in range(len(o)) for j in range(i + 1, len(o))})
+
+    wdir = H.shared_dir() / 'data' / 'remy_rdm_timeseries' / 'windows'
+    shared = [o for o in json.loads((wdir.parent / 'odors.json').read_text()) if o in set(orn.columns)]
+    cols = {'orn_input': corrdist(orn[shared]), 'model_pn': corrdist(rates[shared])}
+    for stage, fname in (('remy_boutons', 'pn_boutons'), ('remy_claws', 'kc_claws')):
+        for win in ('odor_0.5-3', 'early_0.5-1'):
+            for f in sorted(wdir.glob(f'{fname}_*_corrdist_{win}.csv')):
+                fly = f.name.split('_')[2]
+                m = pd.read_csv(f, index_col=0)
+                cols[f'{stage}_{fly}_{win}'] = pd.Series({tuple(sorted((a, b))): float(m.loc[a, b])
+                                                          for i, a in enumerate(shared) for b in shared[i + 1:]})
+    res = pd.DataFrame(cols)
+    res.index = pd.MultiIndex.from_tuples(res.index, names=['odor_a', 'odor_b'])
+    res.to_csv(out / 'pn_level.csv')
+    near = [tuple(sorted(p)) for p in NEAREST]
+    summ = pd.DataFrame({'mean_all': res.mean(), 'mean_nearest': res.loc[[p for p in near if p in res.index]].mean(),
+                         'spearman_with_model_pn': res.corrwith(res['model_pn'], method='spearman'),
+                         'spearman_with_orn_input': res.corrwith(res['orn_input'], method='spearman')})
+    summ.to_csv(out / 'pn_level_summary.csv')
+    print(tot.round(1).to_string(), flush=True)
+    print(summ.round(3).to_string(), flush=True)
+    return res
 
 
 # the controls of the gate's third condition: a point's control is the opposite direction of S3 (power p against 1 / p,
@@ -552,9 +594,8 @@ def main() -> None:
     elif args.part == 'A-score':
         score_fits(out)
     elif args.part == 'B':
-        for f in (pair_kinds, per_odor_parts, inherited_parts, archive_input_variants):
+        for f in (pair_kinds, per_odor_parts, inherited_parts, archive_input_variants, pn_level):
             f(out)
-        # pn_level (the model's PN-level distances against Remy's bouton and claw matrices) is not written yet
     elif args.part == 'C':
         import E77_input_screen as S
         S.screen(out)
