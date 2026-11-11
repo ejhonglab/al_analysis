@@ -723,6 +723,49 @@ def set_time_params(mp: osm.ModelParams, params: Dict[str, float]) -> None:
         setattr(mp, k, float(v))
         assert getattr(mp, k) == float(v)
 
+
+# `fit_mb_model` kwargs for the APL's dynamics: `apl_taum`, the membrane time constant
+# (seconds) of the APL's potential (olfsysm `mp.kc.apl_taum`, default 0.05; also the time
+# constant of each APL unit's potential, when the APL is split into units). Left at
+# olfsysm's default if None, and only recorded in output params (and model IDs) if passed.
+APL_DYNAMICS_PARAMS: Tuple[str, ...] = ('apl_taum',)
+
+
+def apl_dynamics_param_dict(*, apl_taum: Optional[float] = None) -> Dict[str, float]:
+    """Returns checked `APL_DYNAMICS_PARAMS` (as floats), only those not None.
+
+    See `fit_mb_model`. Raises ValueError unless `apl_taum` is finite and at least one
+    olfsysm time step (`mp.time_dt`, 0.5 ms): olfsysm integrates the APL's potential with
+    forward Euler, which keeps it a non-negative mix of its last value and its input only
+    while `mp.time_dt / mp.kc.apl_taum <= 1` (see `max_apl_unit_coupling` for the stricter
+    limit with coupled APL units, which olfsysm checks itself).
+    """
+    params = dict()
+    if apl_taum is not None:
+        params['apl_taum'] = float(apl_taum)
+
+    mp = osm.ModelParams()
+    for k, v in params.items():
+        if not np.isfinite(v) or v < mp.time_dt:
+            raise ValueError(f'{k} must be finite and at least one time step '
+                f'(mp.time_dt={mp.time_dt} s) (got {v})'
+            )
+    return params
+
+
+def set_apl_dynamics_params(mp: osm.ModelParams, params: Dict[str, float]) -> None:
+    """Sets `APL_DYNAMICS_PARAMS` in `params` (e.g. from `apl_dynamics_param_dict`) on
+    olfsysm `mp.kc`. Nothing is set if `params` is empty.
+
+    Must be called before any simulation (the tuning included). `mp.ffapl.taum`, which
+    olfsysm initializes from `mp.kc.apl_taum`, is not changed (`fit_mb_model` sets
+    `mp.kc.ignore_ffapl`, so the feedforward APL is not simulated).
+    """
+    for k, v in params.items():
+        assert k in APL_DYNAMICS_PARAMS, k
+        setattr(mp.kc, k, float(v))
+        assert getattr(mp.kc, k) == float(v)
+
 # TODO also skip stuff equal to default in fit_mb_model (so that if we explicitly
 # specify it for one test later, still matches old repro outputs, at least assuming
 # defaults didn't change...)?
@@ -801,7 +844,7 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
         'claw_weight': 'presence',
         **{k: None for k in AL_INH_PARAMS + KC_KC_INH_PARAMS + CLAW_SAT_PARAMS +
             BOUTON_DEPLETION_PARAMS + EXT_INH_PARAMS + EXT_INH_RECORDED_PARAMS +
-            KC_SPIKING_PARAMS + TIME_PARAMS
+            KC_SPIKING_PARAMS + TIME_PARAMS + APL_DYNAMICS_PARAMS
         },
         **{k: False for k in APL_INH_FORM_PARAMS},
     }
@@ -810,7 +853,8 @@ def format_model_params(model_kws: ParamDict, *, human: bool = False, sep: str =
     param_float_formats = {k: '.3g'
         for k in KC_KC_INH_PARAMS + ('claw_sat', 'claw_thr', 'claw_thr_width',
             'claw_thr_subgain', 'claw_pow', 'claw_pow_ref') + BOUTON_DEPLETION_PARAMS +
-            EXT_INH_RECORDED_PARAMS + KC_SPIKING_PARAMS + TIME_PARAMS
+            EXT_INH_RECORDED_PARAMS + KC_SPIKING_PARAMS + TIME_PARAMS +
+            APL_DYNAMICS_PARAMS
     }
 
     def is_excluded_value(k: str, v: Any) -> bool:
@@ -6311,7 +6355,7 @@ def get_apl_unit_coupling(coupling: float, *, n_neighbors: Optional[int] = None,
 
 
 def max_apl_unit_coupling(*, n_neighbors: Optional[int] = None,
-    dists: Optional[pd.DataFrame] = None) -> float:
+    dists: Optional[pd.DataFrame] = None, apl_taum: Optional[float] = None) -> float:
     """Returns largest `apl_unit_coupling` olfsysm can simulate (w/ default time steps).
 
     olfsysm requires `mp.time_dt / mp.kc.apl_taum * (1 + <max total coupling of one
@@ -6319,11 +6363,14 @@ def max_apl_unit_coupling(*, n_neighbors: Optional[int] = None,
 
     Args:
         n_neighbors / dists: passed to `get_apl_unit_coupling`
+        apl_taum: the APL's time constant (`fit_mb_model` kwarg), if not olfsysm's
+            default
     """
     mp = osm.ModelParams()
+    taum = mp.kc.apl_taum if apl_taum is None else float(apl_taum)
     max_total = get_apl_unit_coupling(1.0, n_neighbors=n_neighbors, dists=dists
         ).sum(axis='columns').max()
-    return float((mp.kc.apl_taum / mp.time_dt - 1) / max_total)
+    return float((taum / mp.time_dt - 1) / max_total)
 
 
 # size of hemibrain voxels, in which synapse coordinates are
@@ -12600,6 +12647,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     kc_refractory_period: Optional[float] = None, kc_adapt_inc: Optional[float] = None,
     kc_adapt_tau: Optional[float] = None,
     time_stim_end: Optional[float] = None, time_end: Optional[float] = None,
+    apl_taum: Optional[float] = None,
     # TODO replace return_dynamics w/ save_dynamics, then use new olfsysm code (to save
     # .npy files for everything) and alongside save parquet(+csv) indices from python in
     # here
@@ -13063,6 +13111,14 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             Longer simulations take proportionally longer and their saved dynamics are
             proportionally larger.
 
+        apl_taum: if not None, the membrane time constant (seconds) of the APL's
+            potential (olfsysm `mp.kc.apl_taum`, default 0.05 if None; of each APL unit's
+            potential if the APL is split into units), which integrates the APL's input
+            from the KCs (or claws) and PN boutons. Applies to every simulation,
+            including tuning. Must be finite and at least one olfsysm time step (0.5
+            ms); coupled APL units need more (see `max_apl_unit_coupling`). Passing the
+            default explicitly does not change outputs (but is recorded).
+
         _wPNKC / _wAPLKC / _wKCAPL / _wAPLPN / _wPNAPL: (internal use only, e.g. tests)
             hardcoded connectivity / APL weights, used instead of `connectome_wPNKC` /
             `connectome_APL_weights` outputs (`_wAPLKC` requires
@@ -13150,8 +13206,8 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `AL_INH_PARAMS`, `KC_KC_INH_PARAMS`, `CLAW_SAT_PARAMS` or
             `BOUTON_DEPLETION_PARAMS` that were passed, e.g. 'pn_inhsc',
             `EXT_INH_RECORDED_PARAMS` for `EXT_INH_PARAMS` passed, any of
-            `APL_INH_FORM_PARAMS` that were True, and any of `KC_SPIKING_PARAMS` or
-            `TIME_PARAMS` that were passed).
+            `APL_INH_FORM_PARAMS` that were True, and any of `KC_SPIKING_PARAMS`,
+            `TIME_PARAMS` or `APL_DYNAMICS_PARAMS` that were passed).
 
             If `use_connectome_APL_weights=True`, output will have `wAPLKC_scale` and
             `wKCAPL_scale`, which are scalars that could be used as input to `wAPLKC` /
@@ -13487,6 +13543,11 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     # which sizes all per-odor timeseries from mp.time_*)
     time_params = time_param_dict(time_stim_end=time_stim_end, time_end=time_end)
     set_time_params(mp, time_params)
+
+    # (only those passed, to also add to param_dict below. set before any simulation,
+    # tuning included)
+    apl_dynamics_params = apl_dynamics_param_dict(apl_taum=apl_taum)
+    set_apl_dynamics_params(mp, apl_dynamics_params)
 
     # (KC / bouton x odor DataFrames w/ columns in orn_deltas order. rows are aligned to
     # the model's KCs / boutons, and the matrices set into rv, below, after rv is
@@ -16469,6 +16530,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
     param_dict.update(apl_inh_form_params)
     param_dict.update(kc_spiking_params)
     param_dict.update(time_params)
+    param_dict.update(apl_dynamics_params)
 
     if use_connectome_APL_weights:
         # TODO assert 'wAPLKC' and 'wKCAPL' either are or are not in param_dict?
@@ -17167,7 +17229,9 @@ def make_fixed_param_kc_simulator(orn_deltas: pd.DataFrame, *,
             set in the olfsysm variables the simulations reuse). So do `TIME_PARAMS`
             (`time_stim_end`, `time_end`: the odor pulse and the simulation length),
             which can only be set for the initial call, since the ORN/LN/PN layers they
-            also determine are only simulated there.
+            also determine are only simulated there, and `APL_DYNAMICS_PARAMS`
+            (`apl_taum`, the APL's time constant, which stays set in the olfsysm
+            parameters the simulations reuse).
 
     Returns `simulate` function, and dict of initial parameters. `simulate` takes dict
     with any subset of keys of initial parameters (others are left at initial values),
@@ -17690,6 +17754,7 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
     condition_param_overrides: Optional[Dict[str, ParamDict]] = None,
     condition_kc_thr_factors: Optional[Dict[str, np.ndarray]] = None,
     condition_hooks: Optional[Dict[str, Callable[..., Any]]] = None,
+    condition_spike_times: Optional[Sequence[str]] = None,
     params_to_optimize: Optional[Union[Sequence[str], Literal['all']]] = None,
     initial_params: Optional[ParamDict] = None,
     bounds: Optional[Dict[str, Tuple[float, float]]] = None, bound_factor: float = 10.0,
@@ -17746,6 +17811,16 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             condition's entry in the outputs passed to `loss_fn` (e.g. a derived quantity
             that needs extra simulations at the current parameters). Not checked by `verify`,
             and not part of the returned 'condition_outputs' best-model reproduction.
+
+        condition_spike_times: if passed, some of the `condition_param_overrides`
+            conditions, simulated with the simulator's `spike_times=True` in every
+            evaluation (e.g. for a loss on spikes weighted by their times): their entries
+            in the outputs passed to `loss_fn` are `(responses, spike_counts,
+            spike_times)` (see `make_fixed_param_kc_simulator`), with the same responses
+            and spike counts as without. The returned 'condition_outputs' keep
+            `(responses, spike_counts)`, and the best evaluation's spike times are
+            returned as 'condition_spike_times'. Costs the copy of olfsysm's spike
+            recordings (KCs x time steps per odor) per simulation.
 
         params_to_optimize: subset of `optimizable_model_params` keys. Defaults to all
             that apply to this model (PN<>APL weight scales only included if
@@ -17828,6 +17903,9 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
             reproduce its best model (as 'fit_mb_model_kws')
         'condition_outputs': dict mapping each condition to `(responses, spike_counts)`
             at best parameters (from simulation during optimization)
+        If `condition_spike_times` passed, also:
+        'condition_spike_times': dict mapping each of those conditions to its spike
+            times at best parameters
     """
     if model_kws.get('plot_dir') is not None:
         raise ValueError('plot_dir not supported. to make plots, call '
@@ -17885,6 +17963,18 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
                 'condition_param_overrides'
             )
 
+    if condition_spike_times is None:
+        spike_time_conditions = set()
+    elif condition_param_overrides is None:
+        raise ValueError('condition_spike_times requires condition_param_overrides')
+    else:
+        spike_time_conditions = set(condition_spike_times)
+        unknown = spike_time_conditions - set(condition_param_overrides)
+        if len(unknown) > 0:
+            raise ValueError(f'condition_spike_times conditions {unknown} not in '
+                'condition_param_overrides'
+            )
+
     simulator_kws = dict(model_kws)
     if (initial_params is None and target_response_rates is not None and
             'target_sparsity' not in model_kws):
@@ -17921,7 +18011,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
 
     if 'apl_unit_coupling' in params_to_optimize:
         max_coupling = max_apl_unit_coupling(
-            n_neighbors=model_kws.get('apl_unit_n_neighbors')
+            n_neighbors=model_kws.get('apl_unit_n_neighbors'),
+            apl_taum=model_kws.get('apl_taum')
         )
 
     param_bounds = dict()
@@ -18013,22 +18104,43 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         else:
             key2outputs = dict()
             condition_outputs = dict()
-            for c, c_params in condition_params(params).items():
+            all_condition_params = condition_params(params)
+            # (keys of the shared simulations that need spike times, so that a condition
+            # sharing one with a condition in condition_spike_times is simulated once)
+            spike_time_keys = {params_key(p) for c, p in all_condition_params.items()
+                if c in spike_time_conditions and c not in condition_kc_thr_factors
+            }
+            for c, c_params in all_condition_params.items():
                 if c in condition_kc_thr_factors:
                     condition_outputs[c] = simulate(c_params,
-                        kc_thr_factor=condition_kc_thr_factors[c]
+                        kc_thr_factor=condition_kc_thr_factors[c],
+                        **({'spike_times': True} if c in spike_time_conditions else {})
                     )
                     continue
 
                 key = params_key(c_params)
                 if key not in key2outputs:
-                    key2outputs[key] = simulate(c_params)
-                condition_outputs[c] = key2outputs[key]
+                    key2outputs[key] = simulate(c_params,
+                        **({'spike_times': True} if key in spike_time_keys else {})
+                    )
+                c_outputs = key2outputs[key]
+                if len(c_outputs) > 2 and c not in spike_time_conditions:
+                    c_outputs = c_outputs[:2]
+                condition_outputs[c] = c_outputs
 
             hook_outputs = {c: hook(simulate, params) for c, hook in condition_hooks.items()}
 
             losses = loss_fn({**condition_outputs, **hook_outputs})
+            spike_times = {c: o[2] for c, o in condition_outputs.items()
+                if c in spike_time_conditions
+            }
+            if len(spike_times) > 0:
+                condition_outputs = {c: tuple(o[:2])
+                    for c, o in condition_outputs.items()
+                }
             outputs = dict(condition_outputs=condition_outputs)
+            if len(spike_times) > 0:
+                outputs['condition_spike_times'] = spike_times
             if len(hook_outputs) > 0:
                 outputs['hook_outputs'] = hook_outputs
 
@@ -18170,6 +18282,8 @@ def optimize_mb_model_params(orn_deltas: pd.DataFrame, *,
         )
         if 'hook_outputs' in best:
             result['hook_outputs'] = best['hook_outputs']
+        if 'condition_spike_times' in best:
+            result['condition_spike_times'] = best['condition_spike_times']
 
     if verify and condition_param_overrides is None:
         responses, spike_counts, wPNKC, param_dict = fit_mb_model(orn_deltas,
