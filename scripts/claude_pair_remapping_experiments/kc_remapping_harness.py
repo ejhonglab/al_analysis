@@ -2255,6 +2255,7 @@ def shuffled_pair_distances(mat: pd.DataFrame, rng: np.random.Generator, *,
 REPEAT_KINDS: Tuple[str, ...] = ('same_repeat', 'different_repeat', 'adjacent', 'first_third')
 TRIAL_VALUES: Tuple[str, ...] = ('graded', 'thresholded', 'binary')
 YANG_DATASETS: Dict[str, int] = {'TNT': 19, 'TNT3c': 20}
+_YANG_TRIALS: Dict[tuple, Dict[tuple, Tuple[np.ndarray, List[str]]]] = {}
 
 
 def yang_recording_trials(genotype: str, units: str = 'z', odors: Optional[Sequence[str]] = None
@@ -2266,19 +2267,59 @@ def yang_recording_trials(genotype: str, units: str = 'z', odors: Optional[Seque
         units: 'z' (Yang's whole-recording z, olfdb's values: data/yang_apl16_kc_olfdb/<genotype>/
             dataset_<id>_long.csv) or 'noise' (baseline-noise units: data/yang_apl16_kc_noise_units/
             per_trial_long.parquet, the realism bands' units).
-        odors: odor abbreviations, in the order of the last axis (default `APL16_ODORS`).
+        odors: odor abbreviations, in the order of the last axis (default `APL16_ODORS`; 'pfo' is the
+            solvent).
 
     Returns {(date, fly_num, hemibrain): array (n_repeats, KCs, odors)}, repeats in the order of olfdb's
-    `repeat` (taken as the repeat's number in the session), KCs sorted by roi.
+    `repeat` (taken as the repeat's number in the session), KCs sorted by roi. Cached per (genotype,
+    units); the arrays returned are copies.
     """
-    raise NotImplementedError
+    odors = list(APL16_ODORS if odors is None else odors)
+    key = (genotype, units)
+    if key not in _YANG_TRIALS:
+        cols = RECORDING_KEYS + ['roi', 'odor', 'repeat', 'value']
+        if units == 'z':
+            d = pd.read_csv(yang_data_dir() / genotype / f'dataset_{YANG_DATASETS[genotype]}_long.csv',
+                usecols=cols)
+        elif units == 'noise':
+            d = pd.read_parquet(shared_dir() / 'data' / 'yang_apl16_kc_noise_units' / 'per_trial_long.parquet',
+                columns=['genotype'] + cols)
+            d = d[d['genotype'] == genotype].drop(columns='genotype')
+        else:
+            raise ValueError(f"units must be 'z' or 'noise', not {units!r}")
+        d['abbrev'] = d['odor'].map(odor_abbrev)
+        out = {}
+        for rec, sub in d.groupby(RECORDING_KEYS, sort=True):
+            w = sub.set_index(['repeat', 'roi', 'abbrev'])['value'].unstack('abbrev').sort_index()
+            reps = sorted(w.index.get_level_values('repeat').unique())
+            rois = sorted(w.index.get_level_values('roi').unique())
+            w = w.reindex(pd.MultiIndex.from_product([reps, rois], names=['repeat', 'roi']))
+            if w.isna().any().any():
+                raise ValueError(f'{genotype} {rec}: missing trials')
+            arr = w.to_numpy(dtype=float).reshape(len(reps), len(rois), w.shape[1])
+            out[(str(rec[0]), int(rec[1]), str(rec[2]))] = (arr, list(w.columns))
+        _YANG_TRIALS[key] = out
+    res = {}
+    for rec, (arr, cols) in _YANG_TRIALS[key].items():
+        missing = [o for o in odors if o not in cols]
+        if missing:
+            raise KeyError(f'{genotype} {rec}: no odors {missing}')
+        res[rec] = arr[:, :, [cols.index(o) for o in odors]].copy()
+    return res
 
 
 def trial_values(trials: np.ndarray, values: str = 'graded', thresh: float = KC_RESPONSE_Z) -> np.ndarray:
     """Single trials read as `values`: 'graded' (unchanged), 'thresholded' (values at or below `thresh`
     set to 0, trial by trial, as a non-responding model KC contributes 0) or 'binary' (1 above `thresh`,
     else 0). Works on any array shape."""
-    raise NotImplementedError
+    X = np.asarray(trials, dtype=float)
+    if values == 'graded':
+        return X
+    if values == 'thresholded':
+        return np.where(X > thresh, X, 0.0)
+    if values == 'binary':
+        return (X > thresh).astype(float)
+    raise ValueError(f'values must be one of {TRIAL_VALUES}, not {values!r}')
 
 
 def trial_cosines(trials: np.ndarray) -> np.ndarray:
@@ -2290,7 +2331,32 @@ def trial_cosines(trials: np.ndarray) -> np.ndarray:
     Returns (n_repeats, odors, n_repeats, odors): [i, a, j, b] is the cosine between the units' responses
     to odor a in repeat i and to odor b in repeat j; NaN where either vector is all zero.
     """
-    raise NotImplementedError
+    X = np.asarray(trials, dtype=float)
+    R, U, O = X.shape
+    Y = X.transpose(0, 2, 1).reshape(R * O, U)
+    G = Y @ Y.T
+    n = np.sqrt(np.diag(G))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        C = G / np.outer(n, n)
+    C[(n == 0)[:, None] | (n == 0)[None, :]] = np.nan
+    return C.reshape(R, O, R, O)
+
+
+def _repeat_masks(n_rep: int) -> Dict[str, np.ndarray]:
+    """{kind: (n_rep, n_rep) bool} of the repeat pairs (i, j) of each kind (ordered pairs)."""
+    i, j = np.meshgrid(np.arange(n_rep), np.arange(n_rep), indexing='ij')
+    return {'same_repeat': i == j, 'different_repeat': i != j, 'adjacent': np.abs(i - j) == 1,
+        'first_third': np.abs(i - j) == 2}
+
+
+def _kind_means(C: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """(odors, odors) mean of C[i, a, j, b] over the repeat pairs in `mask` (NaN skipped; NaN if none)."""
+    if not mask.any():
+        return np.full(C.shape[1:4:2], np.nan)
+    sel = C.transpose(0, 2, 1, 3)[mask]                      # (n_selected, odors, odors)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return np.nanmean(sel, axis=0)
 
 
 def distances_by_kind(trials: np.ndarray, odors: Sequence[str], *, values: str = 'graded',
@@ -2307,16 +2373,47 @@ def distances_by_kind(trials: np.ndarray, odors: Sequence[str], *, values: str =
     'adjacent' (repeats one apart) and 'first_third' (repeats two apart; NaN with fewer than three
     repeats). Each entry is the mean over the trial pairs of that kind (NaN cosines skipped).
     """
-    raise NotImplementedError
+    odors = list(odors)
+    X = trial_values(trials, values, thresh)
+    C = trial_cosines(X)
+    masks = _repeat_masks(X.shape[0])
+    D = {k: 1 - _kind_means(C, m) for k, m in masks.items()}
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    rows = [(a, b) for a, b in pl] + [(o, o) for o in odors]
+    out = pd.DataFrame({k: [D[k][idx[a], idx[b]] for a, b in rows] for k in REPEAT_KINDS},
+        index=pd.MultiIndex.from_tuples(rows, names=['odor_a', 'odor_b']))
+    out.loc[[(o, o) for o in odors], 'same_repeat'] = np.nan
+    return out
 
 
 def same_repeat_gap(by_kind: pd.DataFrame, pairs: Optional[Sequence[Tuple[str, str]]] = None) -> float:
     """The same-repeat gap of one recording: the mean over two-odor pairs (default all of `by_kind`'s;
-    `pairs` restricts them, e.g. to the six pairs with near-identical ORN input) of the single-trial
-    distance between different repeats minus the distance within the same repeat (`distances_by_kind`).
-    Positive when two odors of one repeat are more alike than two odors of different repeats, i.e. when
-    part of the trial-to-trial variability is shared by the odors of a repeat."""
-    raise NotImplementedError
+    `pairs` restricts them, e.g. to the six pairs with near-identical ORN input; either order) of the
+    single-trial distance between different repeats minus the distance within the same repeat
+    (`distances_by_kind`). Positive when two odors of one repeat are more alike than two odors of
+    different repeats, i.e. when part of the trial-to-trial variability is shared by the odors of a
+    repeat."""
+    a = by_kind.index.get_level_values(0)
+    b = by_kind.index.get_level_values(1)
+    keep = np.asarray(a != b)
+    if pairs is not None:
+        want = {tuple(sorted(p)) for p in pairs}
+        keep &= np.array([tuple(sorted(x)) in want for x in by_kind.index])
+        if not keep.any():
+            raise KeyError(f'none of {sorted(want)} in by_kind')
+    g = by_kind.loc[keep, 'different_repeat'] - by_kind.loc[keep, 'same_repeat']
+    return float(g.mean())
+
+
+def _noise_free_matrix(C: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """(odors, odors) noise-free distances 1 - C_ab / sqrt(C_aa C_bb) from single-trial cosines `C`
+    (`trial_cosines`) over the repeat pairs in `mask` (which must exclude i == j)."""
+    M = _kind_means(C, mask)
+    d = np.diag(M).copy()
+    d[~(d > 0)] = np.nan
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return 1 - M / np.sqrt(np.outer(d, d))
 
 
 def noise_free_pair_distances(trials: np.ndarray, odors: Sequence[str], *, repeats: str = 'different',
@@ -2328,7 +2425,8 @@ def noise_free_pair_distances(trials: np.ndarray, odors: Sequence[str], *, repea
     odor a with itself. Noise independent between repeats adds nothing, in expectation, to a product of
     two different repeats, whether or not it is shared by the odors of a repeat; a drift common to an
     odor's repeats acts on C_ab and C_aa alike and cancels in the ratio. Not clipped: a near-identical pair
-    can come out slightly below 0.
+    can come out slightly below 0. (Cosines rather than dot products, so a gain of a whole presentation,
+    which a cosine does not see, does not weigh a trial in.)
 
     Args:
         trials: (n_repeats, units, odors).
@@ -2337,7 +2435,16 @@ def noise_free_pair_distances(trials: np.ndarray, odors: Sequence[str], *, repea
 
     Returns a canonical pair Series (index (odor_a, odor_b)).
     """
-    raise NotImplementedError
+    kind = {'different': 'different_repeat', 'adjacent': 'adjacent', 'first_third': 'first_third'}.get(repeats)
+    if kind is None:
+        raise ValueError(f"repeats must be 'different', 'adjacent' or 'first_third', not {repeats!r}")
+    odors = list(odors)
+    X = trial_values(trials, values, thresh)
+    D = _noise_free_matrix(trial_cosines(X), _repeat_masks(X.shape[0])[kind])
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    return pd.Series([D[idx[a], idx[b]] for a, b in pl],
+        index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
 
 
 def repeat_pair_table(trials: np.ndarray, odors: Sequence[str], *, values: str = 'graded',
@@ -2350,7 +2457,26 @@ def repeat_pair_table(trials: np.ndarray, odors: Sequence[str], *, values: str =
     'noise_free_adjacent', 'noise_free_first_third' (`noise_free_pair_distances` with each `repeats`),
     and the single-trial distances by kind (`REPEAT_KINDS`, from `distances_by_kind`).
     """
-    raise NotImplementedError
+    odors = list(odors)
+    X = trial_values(trials, values, thresh)
+    C = trial_cosines(X)
+    masks = _repeat_masks(X.shape[0])
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    ia = [idx[a] for a, _ in pl]
+    ib = [idx[b] for _, b in pl]
+    xbar = X.mean(axis=0)
+    nrm = np.linalg.norm(xbar, axis=0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        S = (xbar.T @ xbar) / np.outer(nrm, nrm)
+    cols = {'trial_mean': 1 - S[ia, ib],
+        'corrected': noise_corrected_pair_distances(X, odors).to_numpy() if X.shape[0] > 1 else np.full(len(pl), np.nan)}
+    for name, kind in (('noise_free', 'different_repeat'), ('noise_free_adjacent', 'adjacent'),
+            ('noise_free_first_third', 'first_third')):
+        cols[name] = _noise_free_matrix(C, masks[kind])[ia, ib]
+    for kind in REPEAT_KINDS:
+        cols[kind] = (1 - _kind_means(C, masks[kind]))[ia, ib]
+    return pd.DataFrame(cols, index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
 
 
 def repeat_response_stats(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z
@@ -2358,7 +2484,65 @@ def repeat_response_stats(trials: np.ndarray, odors: Sequence[str], *, thresh: f
     """Per repeat and odor of one recording: 'rate' (fraction of units whose single-trial value is above
     `thresh`), 'amplitude' (the mean single-trial value of those units; NaN if none), 'n_resp', 'n_units'.
     Indexed (repeat (0-based), odor)."""
-    raise NotImplementedError
+    X = np.asarray(trials, dtype=float)
+    R, U, O = X.shape
+    resp = X > thresh
+    n_resp = resp.sum(axis=1)                                   # (R, O)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        amp = np.where(resp, X, 0.0).sum(axis=1) / n_resp
+    odors = list(odors)
+    idx = pd.MultiIndex.from_product([range(R), odors], names=['repeat', 'odor'])
+    return pd.DataFrame({'rate': (n_resp / U).ravel(), 'amplitude': amp.ravel(), 'n_resp': n_resp.ravel(),
+        'n_units': np.full(R * O, U)}, index=idx)
+
+
+def _pair_cov_sums(h: np.ndarray, A: np.ndarray, B: Optional[np.ndarray] = None) -> Tuple[float, float]:
+    """Sum over units, repeats and ordered odor pairs o != p with (unit, o) in A and (unit, p) in B
+    (B = A if None) of h[r, k, o] h[r, k, p], and the number of such (unit, o, p) triples.
+    A, B: (units, odors) bool; when B is given, A must be a subset of B."""
+    hA = np.where(A[None], h, 0.0)
+    if B is None:
+        s = hA.sum(axis=2)
+        q = (hA ** 2).sum(axis=2)
+        nA = A.sum(axis=1)
+        return float((s ** 2 - q).sum()), float((nA * (nA - 1)).sum())
+    hB = np.where(B[None], h, 0.0)
+    total = float((hA.sum(axis=2) * hB.sum(axis=2) - (hA ** 2).sum(axis=2)).sum())
+    return total, float((A.sum(axis=1) * (B.sum(axis=1) - 1)).sum())
+
+
+def _repeat_gains(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The gain of each presentation and the deviations of one recording (`repeat_variance_parts`).
+
+    The dot products over units between two different repeats of one odor, P_rs = x_r . x_s (r != s), are
+    g_r g_s |m|^2 in expectation whatever noise is independent between repeats, so each repeat's gain follows
+    from them: a_r = sqrt(g_r^2 |m|^2) from log P_rs = log a_r + log a_s by least squares (with three repeats
+    exactly a_r^2 = P_rs P_rt / P_st), and the relative gain is a_r over the mean of the a's.
+
+    Returns (d, gdev, m, Q): d (R, U, O) the deviations from each entry's mean over repeats; gdev (R, O) each
+    presentation's relative gain minus 1 (0 for every presentation of an odor with a product not positive, and
+    with fewer than three repeats, where gain and noise cannot be told apart); m (U, O) the trial means; Q
+    (U, O) the mean over i != j of x_i x_j per entry, an estimate of the entry's squared noise-free mean.
+    """
+    R, U, O = X.shape
+    m = X.mean(axis=0)
+    d = X - m[None]
+    gdev = np.zeros((R, O))
+    if R >= 3:
+        P = np.einsum('iko,jko->ijo', X, X)                      # (R, R, O)
+        iu, ju = np.triu_indices(R, 1)
+        A = np.zeros((len(iu), R))
+        A[np.arange(len(iu)), iu] = 1.0
+        A[np.arange(len(iu)), ju] = 1.0
+        Pu = P[iu, ju]                                           # (n_pairs, O)
+        ok = (Pu > 0).all(axis=0)
+        if ok.any():
+            la = np.linalg.lstsq(A, np.log(Pu[:, ok]), rcond=None)[0]     # (R, n_ok)
+            a = np.exp(la)
+            gdev[:, ok] = a / a.mean(axis=0) - 1.0
+    S = X.sum(axis=0)
+    Q = (S ** 2 - (X ** 2).sum(axis=0)) / (R * (R - 1))
+    return d, gdev, m, Q
 
 
 def repeat_variance_parts(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z,
@@ -2367,40 +2551,92 @@ def repeat_variance_parts(trials: np.ndarray, odors: Sequence[str], *, thresh: f
 
     Each entry's deviation from its own mean over repeats, d[r, k, o] = x[r, k, o] - mean_r x[., k, o],
     is split into three parts, with x the units' (KCs') single-trial values:
-    - 'gain': common to all units of a presentation (repeat r of odor o), proportional to the units' mean
-      response to that odor: c[r, o] * mean_r x[., k, o], c fitted by least squares over all units (a
-      cosine does not see it);
+    - 'gain': common to all units of a presentation (repeat r of odor o), proportional to the units'
+      noise-free response to that odor (a cosine does not see it; it also takes up a run-down common to the
+      whole repeat). The presentation's relative gain comes from products of different repeats
+      (`_repeat_gains`), so the noise in the trial mean does not attenuate it as a regression on the trial
+      mean would; the part's variance in an entry is the variance over repeats of its odor's relative gains
+      times the entry's squared noise-free mean (estimated from products of different repeats);
     - 'shared': common to one unit's odors within a repeat: the covariance between two different odors'
-      residual deviations (after the gain part) of the same unit in the same repeat;
-    - 'rest': the remainder, independent between the odors of a repeat.
-    Variances are per trial (sums over repeats of squared deviations divided by n_repeats - 1, which is
-    unbiased for a part independent between repeats), averaged over the entries of a class.
+      residual deviations (the gain part, relative gain deviation times trial mean, removed) of the same unit
+      in the same repeat;
+    - 'rest': the remainder, var_total - var_gain - var_shared (independent between the odors of a repeat).
+    Variances are per trial (sums over repeats of squared deviations, or of products, divided by
+    n_repeats - 1, which is unbiased for a part independent between repeats), averaged over the entries
+    (or, for the shared part, the unit x odor-pair products) of a class.
 
     Args:
         trials: (n_repeats, units, odors).
         thresh: an entry (unit, odor) is a responder when its trial mean is above `thresh`, silent
-            otherwise; the shared part of a class is taken over pairs of odors whose two entries are both
-            in the class.
+            otherwise; the shared part of 'all', 'responders' and 'silent' is taken over pairs of odors
+            whose two entries are both in the class.
         n_amp_bins: the responders' entries are also split into this many quantile bins of their trial
-            mean (a pair's bin: the geometric mean of its two entries' trial means), to show whether each
-            part scales with the amplitude.
+            mean ('responders_amp1' the lowest); a bin's shared part is the covariance of its entries
+            with the same unit's other responder entries, to show whether each part scales with the
+            amplitude.
 
     Returns a DataFrame indexed by class ('all', 'responders', 'silent', 'responders_amp1', ...): n_entries,
-    n_pairs (odor pairs of entries in the class, over units), mean_amplitude, var_total, var_gain,
-    var_shared, var_rest (var_total minus the other two), share_gain, share_shared, share_rest (of
-    var_total), sd_trial (sqrt(var_total)) and corr_shared (var_shared over the class's residual variance,
-    the correlation of two odors' residual deviations within a repeat).
+    n_pairs (unit x ordered odor pairs behind the shared part), mean_amplitude (mean trial mean),
+    var_total, var_gain, var_shared, var_rest, share_gain, share_shared, share_rest (of var_total),
+    sd_trial (sqrt(var_total)) and corr_shared (var_shared over var_total - var_gain: the correlation of
+    two odors' deviations within a repeat once the gain part is removed).
     """
-    raise NotImplementedError
+    X = np.asarray(trials, dtype=float)
+    R = X.shape[0]
+    if R < 2:
+        raise ValueError('need at least two repeats')
+    d, gdev, m, Q = _repeat_gains(X)
+    h = d - gdev[:, None, :] * m[None]
+    v_tot = (d ** 2).sum(axis=0) / (R - 1)                      # per entry
+    v_gain = ((gdev ** 2).sum(axis=0) / (R - 1))[None, :] * Q
+    resp = m > thresh
+    classes = {'all': (np.ones_like(resp), None), 'responders': (resp, None), 'silent': (~resp, None)}
+    if n_amp_bins and resp.sum() >= n_amp_bins:
+        edges = np.quantile(m[resp], np.linspace(0, 1, n_amp_bins + 1))
+        b = np.clip(np.searchsorted(edges, m, side='right') - 1, 0, n_amp_bins - 1)
+        for i in range(n_amp_bins):
+            classes[f'responders_amp{i + 1}'] = (resp & (b == i), resp)
+    rows = {}
+    for name, (A, B) in classes.items():
+        n = int(A.sum())
+        if n == 0:
+            rows[name] = dict(n_entries=0, n_pairs=0)
+            continue
+        s, npairs = _pair_cov_sums(h, A, B)
+        vt, vg = float(v_tot[A].mean()), float(v_gain[A].mean())
+        vs = s / (R - 1) / npairs if npairs > 0 else np.nan
+        rows[name] = dict(n_entries=n, n_pairs=int(npairs), mean_amplitude=float(m[A].mean()), var_total=vt,
+            var_gain=vg, var_shared=vs, var_rest=vt - vg - vs, share_gain=vg / vt, share_shared=vs / vt,
+            share_rest=(vt - vg - vs) / vt, sd_trial=float(np.sqrt(vt)), corr_shared=vs / (vt - vg))
+    return pd.DataFrame(rows).T.rename_axis('class')
 
 
 def coresponder_deviation_corr(trials: np.ndarray, odors: Sequence[str], *, thresh: float = KC_RESPONSE_Z,
-    min_units: int = 5) -> pd.Series:
+    min_units: int = 5, remove_gain: bool = False) -> pd.Series:
     """Per two-odor pair of one recording: the correlation, over the units responding to both odors (trial
     mean above `thresh`) and the repeats, between the two odors' deviations from each unit's mean over
-    repeats (the shared state among co-responders). NaN for pairs with fewer than `min_units` such units.
+    repeats (the shared state among co-responders; with `remove_gain`, after the gain part of
+    `repeat_variance_parts`). NaN for pairs with fewer than `min_units` such units.
     Returns a canonical pair Series."""
-    raise NotImplementedError
+    X = np.asarray(trials, dtype=float)
+    d, gdev, m, _ = _repeat_gains(X)
+    if remove_gain:
+        d = d - gdev[:, None, :] * m[None]
+    resp = m > thresh
+    odors = list(odors)
+    pl = pair_list(odors)
+    idx = {o: i for i, o in enumerate(odors)}
+    vals = []
+    for a, b in pl:
+        ia, ib = idx[a], idx[b]
+        k = resp[:, ia] & resp[:, ib]
+        if k.sum() < min_units:
+            vals.append(np.nan)
+            continue
+        da, db = d[:, k, ia].ravel(), d[:, k, ib].ravel()
+        den = np.sqrt((da ** 2).sum() * (db ** 2).sum())
+        vals.append(float((da * db).sum() / den) if den > 0 else np.nan)
+    return pd.Series(vals, index=pd.MultiIndex.from_tuples(pl, names=['odor_a', 'odor_b']))
 
 
 # ---------------------------------------------------------------------------
