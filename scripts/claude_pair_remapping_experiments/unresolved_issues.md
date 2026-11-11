@@ -182,6 +182,16 @@ directory's notes/ and are linked from here.
 
 ## Resolved
 
+### E76's note gave three fit-start parameters from the wrong rows (found 2026-11-10 23:40, atlas's planning subagent)
+- **What.** In E76_data_side_target.md (the data side of the main target), the fits table's row "somatic threshold / APL→KC /
+  APL→bouton / KC–KC" gave E69's fit 2 (the start of fits 0 and 1) APL→bouton 0.27 and KC–KC 20.8, which are fit 0's values; E69's
+  fits.csv and the first evaluation of fit 0's history give 0.245 and 21.2. It gave E69's fit 3 (the start of fit 2) KC–KC 10.9, the
+  value of that fit's own start, not its optimum (12.2); the Realism section repeated 20.8 / 10.9 as the starts.
+- **Touches.** The note and its page only; the summary's passage reads its parameters from E76's fits.csv; chat and E76's Status
+  compared fit 1 with fit 0 (whose values were right).
+- **Done.** The note is corrected (dated line in its header), its page rebuilt and republished, reports/E76_data_side_target.html
+  saved again (2026-11-10 23:50).
+
 ### The summary's low-concentration table read the wrong noisy fraction (found 2026-11-10, viki's planning subagent)
 - **What.** In "The per-claw threshold at low concentration" the summary template fills the columns "APL on, through the matched noise"
   from E49's `fractions.csv` column `frac_trial` (each trial's response fraction, averaged). E49's note and that subsection's prose describe
