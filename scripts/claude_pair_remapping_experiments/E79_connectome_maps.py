@@ -417,7 +417,7 @@ def masked_pearson(pred: np.ndarray, meas: np.ndarray, inside: np.ndarray) -> np
 
 def measured_maps(baseline: str = 'all_pfo') -> Dict[str, dict]:
     """recording -> {'grid': {comparison: 144 map}, 'inside': 144 bool, 'concs': {comparison: chosen concentrations},
-    'means': ..., 'side'}: the single-odor maps at their highest concentration (each over its calyx mean), and pa minus
+    'means': ..., 'split_half_r': {comparison: r between the two presentations' grids}, 'side'}: the single-odor maps at their highest concentration (each over its calyx mean), and pa minus
     ms, paa minus ms at matched calyx-mean dF/F (each map over its mean), blurred MEAS_BLUR_PX, on the 12 x 12 grid over
     the ROI's bounding box (image axes as recorded). `baseline` 'all_pfo': apl_calyx_maps.py's maps (each stimulus minus
     the mean of all paraffin oil presentations); any other value is passed to E79_apl_calyx_constraints.stimulus_maps
@@ -439,13 +439,21 @@ def measured_maps(baseline: str = 'all_pfo') -> Dict[str, dict]:
         M, inside = cell_matrix(mask)
         means = {k: float(v[0][mask].mean()) for k, v in maps.items()}
 
-        def grid(k):
-            m = gaussian_filter(maps[k][0], MEAS_BLUR_PX) / means[k]
+        def grid(k, rep=None):
+            m = maps[k][0] if rep is None else maps[k][1][rep]
+            m = gaussian_filter(m, MEAS_BLUR_PX) / means[k]
             return np.asarray(M.T @ m.ravel()).ravel()
-        g, concs, used = {}, {}, {}
+
+        def split_half(fa, fb=None):
+            # r between the grids of the first and the second presentations (of a difference: of each odor)
+            if len(maps[fa][1]) < 2 or (fb is not None and len(maps[fb][1]) < 2):
+                return np.nan
+            h = [grid(fa, i) - (grid(fb, i) if fb is not None else 0.0) for i in (0, 1)]
+            return float(masked_pearson(h[0][None, :], h[1], inside)[0])
+        g, concs, used, rel = {}, {}, {}, {}
         for odor in MAP_ODORS:
             k = max((kk for kk in maps if kk[0] == odor), key=lambda kk: kk[1])
-            g[odor], concs[odor], used[odor] = grid(k), {odor: k[1]}, {odor: means[k]}
+            g[odor], concs[odor], used[odor], rel[odor] = grid(k), {odor: k[1]}, {odor: means[k]}, split_half(k)
         for a, b in DIFFS:
             ka = [k for k in maps if k[0] == a]
             kb = [k for k in maps if k[0] == b]
@@ -460,7 +468,8 @@ def measured_maps(baseline: str = 'all_pfo') -> Dict[str, dict]:
             g[f'{a}-{b}'] = grid(x) - grid(y)
             concs[f'{a}-{b}'] = {a: x[1], b: y[1]}
             used[f'{a}-{b}'] = {a: means[x], b: means[y]}
-        out[name] = dict(grid=g, inside=inside, concs=concs, means=used, side=rec['side'], mask=mask,
+            rel[f'{a}-{b}'] = split_half(x, y)
+        out[name] = dict(grid=g, inside=inside, concs=concs, means=used, split_half_r=rel, side=rec['side'], mask=mask,
                          maps={k: v[0] for k, v in maps.items()})
     return out
 
@@ -658,7 +667,8 @@ def run_maps(n_perm: int = N_PERM, calyces: Optional[Dict[str, dict]] = None, ra
     measured = pd.DataFrame([dict(recording=rec, side=m['side'], comparison=comp,
                                   **{f'conc_{o}': c for o, c in m['concs'][comp].items()},
                                   **{f'mean_dff_{o}': v for o, v in m['means'][comp].items()},
-                                  outside_1log=any(abs(c - INPUT_CONC[o]) > 1.0 for o, c in m['concs'][comp].items()))
+                                  outside_1log=any(abs(c - INPUT_CONC[o]) > 1.0 for o, c in m['concs'][comp].items()),
+                                  split_half_r=m['split_half_r'][comp])
                              for rec, m in meas.items() for comp in COMPARISONS])
     OUT.mkdir(parents=True, exist_ok=True)
     scores.to_csv(OUT / f'connectome_map_scores{sfx}.csv.gz', index=False)
@@ -1227,6 +1237,15 @@ def write_table(tables: Dict[str, pd.DataFrame]) -> None:
                   'connectome_glomerulus_positions.csv)', '',
                   'pa drives DM3, DM2, DM6, DC2, VM5d most in the model\'s PN rates at -3; ms DL1, VA7m, D; paa DM1, VL2a, '
                   'DL2v.', '', _md(q.reset_index(), '.2f'), '']
+    if 'measured' in tables and 'split_half_r' in tables['measured']:
+        m = tables['measured']
+        q = m.groupby('comparison')['split_half_r'].describe()[['count', 'min', '25%', '50%', '75%', 'max']]
+        lines += ['## Measured maps: split-half reliability on the 12 x 12 grid (r between the first and the second '
+                  'presentations\' maps, or differences of maps; connectome_measured.csv)', '',
+                  'The most a noiseless prediction could reach against one recording\'s map (the mean of both '
+                  'presentations) is about sqrt(2r / (1 + r)), r the split-half r (Spearman-Brown); r <= 0 means no '
+                  'reproducible pattern at this grid.', '',
+                  _md(q.reset_index(), '.2f'), '']
     if 'measured' in tables:
         m = tables['measured']
         lines += ['## Measured maps: concentrations used (log10; outside_1log: more than one log unit from the model\'s '
