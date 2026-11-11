@@ -164,6 +164,24 @@ Yang's z; not with --apl-readout zcell, whose data side is the reading's. Every 
 against that effect. Default `z`, the fits as before; recorded in fits.csv (apl_data_units), the provenance and the
 tag (dnu after the APL readout part) only when noise. The fits.csv spike_counts_cosine__apl_effect_* columns stay
 against Yang's z.
+The flies' recording protocol (E82): `--stim-end S` and `--sim-end E` end the odor pulse at S and the simulation at E
+seconds after onset (mb_model's time_stim_end / time_end; olfsysm's 0.5 / 0.75 s when not given; each a whole number of
+0.5 ms steps), and `--apl-taum T` sets the APL's membrane time constant (mb_model's apl_taum; olfsysm's 0.05 s), in every
+simulation of the fit (`protocol_kws`); with --stim-end / --sim-end the breadth comes from the base's APL-off run at the
+same pulse (`bouton_base`'s timing; cached with a pulse<S>end<E>_ prefix), and so do the E71 / E78 pre-passes built on
+it, as E80 / E82 re-hold their points (the APL's time constant does not change an APL-off run). `--count-kernel RISE
+DECAY` (with --loss apl, not with the zcell readings) computes the APL-effect terms (both readouts, block_cal and the
+calibrated mean distances) on kernel-weighted counts instead of spike counts: each spike weighted by the area inside
+the flies' window (2.0 to 8.1 s after onset) of the indicator kernel (1 - exp(-t / RISE)) exp(-t / DECAY) it starts,
+over that of a spike at the window's start (kc_remapping_harness.kernel_weighted_counts), from the spike times of every
+evaluation (optimize_mb_model_params' condition_spike_times); the calibrated readout's K is calibrated on the weighted
+APL-on counts of the responders (two or more spikes over the whole simulation, which also stay the responses of every
+rate term) and applied unchanged to APL off (`apl_effect_terms`' responders_on). `--save-spike-times` saves the best
+fit's spike times (<tag>_<on|acute_off>_spike_times.parquet beside its counts; always with --count-kernel). All off by
+default (the fits as before, nothing in the loss changes); recorded in fits.csv (time_stim_end, time_end, apl_taum,
+count_kernel_rise, count_kernel_decay) and the provenance (protocol) only when given; tag suffix after k<k>:
+_pulse<S> (the simulation ending 0.25 s after the pulse, as E80's; otherwise _pulse<S>end<E>, or _end<E> with --sim-end
+alone), _apltau<T in ms>, _kr<RISE>d<DECAY>; refused with --block-proxy and --apl-drive spikes_only.
 """
 from __future__ import annotations
 
@@ -239,6 +257,64 @@ def claw_transfer_tag(transfer: Optional[dict]) -> str:
     t = transfer or {}
     return ('' if 'claw_thr_subgain' not in t else f"sg{t['claw_thr_subgain']:g}") + (
         '' if 'claw_thr_width' not in t else f"w{t['claw_thr_width']:g}")
+
+
+# (E82) the simulation ends this long after the pulse unless --sim-end says otherwise (E80's 0.25 s, olfsysm's tail)
+PROTOCOL_TAIL = 0.25
+TIMING_KEYS = ('time_stim_end', 'time_end')
+
+
+def protocol_kws(stim_end: Optional[float] = None, sim_end: Optional[float] = None,
+    apl_taum: Optional[float] = None) -> dict:
+    """fit_mb_model kwargs of the flies' recording protocol (E82), as --stim-end / --sim-end / --apl-taum set them:
+    time_stim_end, time_end and apl_taum, only those given, each checked as fit_mb_model checks it (ValueError)."""
+    from al_analysis.mb_model import time_param_dict, apl_dynamics_param_dict
+    kws = dict(time_param_dict(time_stim_end=stim_end, time_end=sim_end))
+    kws.update(apl_dynamics_param_dict(apl_taum=apl_taum))
+    return kws
+
+
+def timing_kws(protocol: Optional[dict]) -> dict:
+    """The pulse's and the simulation's ends among `protocol_kws` (what changes an APL-off run, so the breadth)."""
+    return {k: v for k, v in (protocol or {}).items() if k in TIMING_KEYS}
+
+
+def timing_label(timing: Optional[dict]) -> str:
+    """pulse<S>end<E> with olfsysm's defaults for one not given ('' for none): the breadth cache's prefix."""
+    if not timing:
+        return ''
+    import olfsysm as osm
+    mp = osm.ModelParams()
+    return f"pulse{timing.get('time_stim_end', mp.time_stim_end):g}end{timing.get('time_end', mp.time_end):g}"
+
+
+def protocol_tag(protocol: Optional[dict], kernel: Optional[Tuple[float, float]] = None) -> str:
+    """The tag suffix (after k<k>) of the protocol options: _pulse<S> when the simulation ends PROTOCOL_TAIL after the
+    pulse, else _pulse<S>end<E> (E olfsysm's 0.75 s when not given), _end<E> for --sim-end alone; _apltau<T in ms>;
+    _kr<RISE>d<DECAY> for the count kernel; '' for none."""
+    p = protocol or {}
+    tag = ''
+    if 'time_stim_end' in p:
+        import olfsysm as osm
+        s = float(p['time_stim_end'])
+        e = float(p.get('time_end', osm.ModelParams().time_end))
+        tag += f'_pulse{s:g}' + ('' if abs(e - (s + PROTOCOL_TAIL)) < 1e-9 else f'end{e:g}')
+    elif 'time_end' in p:
+        tag += f"_end{float(p['time_end']):g}"
+    if 'apl_taum' in p:
+        tag += f"_apltau{float(p['apl_taum']) * 1e3:g}"
+    if kernel is not None:
+        tag += f'_kr{float(kernel[0]):g}d{float(kernel[1]):g}'
+    return tag
+
+
+def kernel_counts(spike_times: pd.DataFrame, like: pd.DataFrame, kernel: Tuple[float, float]) -> pd.DataFrame:
+    """(E82) A simulation's spike counts read through the flies' protocol: each spike (`spike_times`, the simulator's
+    third output with spike_times=True) weighted by the area inside the flies' window of the indicator kernel with time
+    constants `kernel` (rise, decay, seconds), over that of a spike at the window's start
+    (kc_remapping_harness.kernel_weighted_counts, with its window, 2.0 to 8.1 s after onset); KCs x odors as `like`
+    (that simulation's spike counts)."""
+    return H.kernel_weighted_counts(spike_times, like.index, like.columns, float(kernel[0]), float(kernel[1]))
 
 
 def base_kws(claw_thr, apl_drive: str = 'claws', transfer: Optional[dict] = None) -> dict:
@@ -505,7 +581,8 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     gain_gloms=None, wiring: Optional[str] = None, wiring_seed: int = 0, apl_drive: str = 'claws',
     base_params: Optional[str] = None, info: Optional[dict] = None, input_tag: Optional[str] = None,
     wiring_matrix: Optional[pd.DataFrame] = None, wiring_tag: Optional[str] = None,
-    kc_thr_input_exp: Optional[float] = None, claw_transfer: Optional[dict] = None):
+    kc_thr_input_exp: Optional[float] = None, claw_transfer: Optional[dict] = None,
+    timing: Optional[dict] = None):
     """The bouton base at its tuned parameters (E3's; with `claw_thr`, E16's as recorded in
     E19's thr<T>_k0_kckc0 row): normalized APL weights, wPNKC, and the per-KC APL-off
     breadth (total spike count; hal's saved run if copied to the shared directory, else
@@ -548,7 +625,13 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
     common threshold re-tuned to the transfer-free run's APL-off response count (`transfer_prepass`,
     cached beside that run; its record goes into `info['claw_transfer_prepass']`, if passed). The
     returned parameters, weights and wiring are the base's (the transfer is a model kwarg: pass it to
-    `base_kws` for the fit)."""
+    `base_kws` for the fit).
+
+    With `timing` (`timing_kws`, not empty; the odor pulse's and the simulation's ends, E82), the APL-off
+    run behind the breadth (and any pre-pass above built on it) has that pulse: the breadth of the base at
+    the flies' pulse, as E77_input_screen.handle_breadth computes it for E80's re-held points (cached with
+    a `timing_label` prefix; hal's saved runs are at olfsysm's pulse, so they do not apply). The returned
+    parameters, weights and wiring are the base's (the timing is a model kwarg of the fit too)."""
     from al_analysis.mb_model import fit_mb_model
     hal_out = H.shared_dir() / 'data' / 'hal_outputs'
     if claw_thr is None:
@@ -628,6 +711,15 @@ def bouton_base(orn: pd.DataFrame, out_dir: Path, claw_thr=None, gain: Optional[
         gset = '' if sorted(gloms) == sorted(ORACLE) else '-'.join(sorted(gloms)) + '_'
         off_path = out_dir / (f'gain{gain:g}_{gset}' + off_path.name)
         print(f'gain {gain:g} on {gloms}', flush=True)
+    if timing:
+        bad = set(timing) - set(TIMING_KEYS)
+        if bad:
+            raise ValueError(f'unknown timing kwargs {sorted(bad)}')
+        # the breadth (and the pre-passes) at this pulse (hal's saved runs are at olfsysm's)
+        kws = dict(kws, **timing)
+        hal_path = out_dir / 'no_such_file'
+        off_path = out_dir / (timing_label(timing) + '_' + off_path.name)
+        print(f'breadth at the pulse {timing}', flush=True)
     if hal_path.exists():
         off_spk = pd.read_parquet(hal_path)
         print(f'breadth from {hal_path}', flush=True)
@@ -804,16 +896,27 @@ def odors_per_kc(responses: pd.DataFrame) -> np.ndarray:
 
 
 def apl_effect_terms(on: pd.Series, off: pd.Series, s_on: pd.DataFrame, s_off: pd.DataFrame,
-    data: pd.Series, cal_target: float) -> Dict[str, float]:
+    data: pd.Series, cal_target: float, responders_on: Optional[pd.DataFrame] = None) -> Dict[str, float]:
     """The APL-effect statistics of one model (E67) under raw spike counts (`on`, `off`: its cosine
     distances) and under E65's calibrated saturating readout (K set on `s_on` so that the participation
     ratio among responders, under 2 spikes zeroed, is `cal_target`, then applied to both conditions):
     apl_<raw|cal>_<rmse, mean, pattern, per_odor, pair_specific, rho> (`apl_effect_decomposition`), apl_cal_K,
     apl_cal_K_at_bound (1 if the calibration missed its target by more than 2 %), block_cal (the block on the
-    calibrated distances), mean_dist_cal_on / _off."""
+    calibrated distances), mean_dist_cal_on / _off.
+
+    `responders_on` (E82's --count-kernel: `s_on` / `s_off` are then kernel-weighted counts, `on` / `off` their
+    cosine distances): the APL-on responders (boolean, as `s_on`; two or more spikes), whose readout the
+    calibration keeps (the others zeroed), instead of the entries of `s_on` at 2 or more."""
     out = {}
-    K = H.calibrate_readout(s_on, 'saturating', cal_target, stat='participation_ratio', responders_min=2.0)
-    got = H.readout_stat(s_on, 'saturating', K, 'participation_ratio', 2.0)
+    if responders_on is None:
+        K = H.calibrate_readout(s_on, 'saturating', cal_target, stat='participation_ratio', responders_min=2.0)
+        got = H.readout_stat(s_on, 'saturating', K, 'participation_ratio', 2.0)
+    else:
+        # (the saturating readout keeps 0 at 0, so zeroing the non-responders' amplitudes first zeroes their readout,
+        # as responders_min does on counts)
+        masked = s_on.where(responders_on.to_numpy(dtype=bool), 0.0)
+        K = H.calibrate_readout(masked, 'saturating', cal_target, stat='participation_ratio')
+        got = H.readout_stat(masked, 'saturating', K, 'participation_ratio')
     d_on = H.readout_pair_distances(s_on, 'saturating', K)
     d_off = H.readout_pair_distances(s_off, 'saturating', K)
     for name, (a, b) in (('raw', (on, off)), ('cal', (d_on, d_off))):
@@ -880,7 +983,7 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     variant: Optional[str] = None, apl_readout: str = 'cal', apl_pattern_only: bool = False,
     apl_block_term: bool = False, apl_opk_term: bool = False, rate_criterion: str = 'spikes',
     zcell: Optional[dict] = None, apl_class_term: bool = False, apl_class_form: str = 'sq', band_units: str = 'z',
-    apl_data_units: str = 'z'):
+    apl_data_units: str = 'z', count_kernel: Optional[Tuple[float, float]] = None):
     """Joint loss over {'on': (responses, spike_counts), 'off': ...} (see module doc). `variant` names the
     weight set (`loss_weights`; default 'structure' with `structure=True`, else 'base'); 'rho' (E63) computes
     the structure statistics but weights only the two matrix terms, the rates, the operating point and the
@@ -930,6 +1033,12 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     registry's apl_effect_rmse_floor and ctrl_participation_ratio_resp); 'noise' from the KC data in baseline-noise
     units (`E76_data_side_target.data_effect('noise')`, noise_apl_effect_rmse_floor, noise_apl_effect_cal_target); not
     with `apl_readout` 'zcell', whose data side is the reading's.
+
+    `count_kernel` (rise, decay; E82, needs variant 'apl', not the zcell readings): the APL-effect statistics
+    (`apl_effect_terms`: both readouts, block_cal, the calibrated mean distances) on the kernel-weighted counts of the
+    'on' / 'off' simulations (`kernel_counts`) instead of their spike counts, the calibration's responders those with
+    two or more spikes; every other statistic as without it. The 'on' and 'off' outputs must then carry their spike
+    times, (responses, spike_counts, spike_times) (optimize_mb_model_params' condition_spike_times).
 
     With `structure=True` (E25) three terms are added: the structure beyond the ORN input
     with APL on (rank agreement of the KC residual from a linear ORN prediction with the
@@ -1026,6 +1135,14 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     elif apl_pattern_only or apl_block_term or apl_opk_term or apl_readout != 'cal' or rate_criterion != 'spikes' or \
             zcell is not None or apl_class_term or apl_class_form != 'sq' or apl_data_units != 'z':
         raise ValueError('the apl_* / rate_criterion / zcell options need variant=apl')
+    if count_kernel is not None:
+        if not apl:
+            raise ValueError("count_kernel needs variant='apl' (it changes the APL-effect terms only)")
+        if use_zcell:
+            raise ValueError('count_kernel is not defined for the zcell readings (they read spike counts)')
+        count_kernel = (float(count_kernel[0]), float(count_kernel[1]))
+        # (checked once here, as the harness checks it: one spike at onset)
+        kernel_counts(pd.DataFrame(dict(kc=[0], odor=[0], time_s=[0.0])), pd.DataFrame([[1.0]]), count_kernel)
     weights = loss_weights(variant)
     if apl_class_term:
         weights['apl_class'] = APL_CLASS_WEIGHT
@@ -1035,7 +1152,14 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
     jit = jitter_conditions(jitter_k)
 
     def loss_fn(outputs) -> Dict[str, float]:
-        out, terms = stats_terms(*outputs['on'], *outputs['off'])
+        if count_kernel is None:
+            # (with --save-spike-times the 'on' / 'off' outputs also carry their spike times, not used here)
+            out, terms = stats_terms(*outputs['on'][:2], *outputs['off'][:2])
+        else:
+            # (E82) the 'on' / 'off' outputs carry their spike times
+            (r_on, s_on, st_on), (r_off, s_off, st_off) = outputs['on'], outputs['off']
+            out, terms = stats_terms(r_on, s_on, r_off, s_off, apl_counts=(kernel_counts(st_on, s_on, count_kernel),
+                kernel_counts(st_off, s_off, count_kernel)))
         if jit:
             runs = {c: [outputs[j] for j, cc in jit if cc == c] for c in ('on', 'off')}
             rdms = None
@@ -1064,10 +1188,12 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         out['loss'] = float(sum(out[f'term_{n}'] for n in terms))
         return {kk: float(vv) for kk, vv in out.items()}
 
-    def stats_terms(r_on, s_on, r_off, s_off, rdms: Optional[dict] = None
+    def stats_terms(r_on, s_on, r_off, s_off, rdms: Optional[dict] = None,
+        apl_counts: Optional[Tuple[pd.DataFrame, pd.DataFrame]] = None
         ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """(statistics, loss terms) of one APL-on / APL-off pair of outputs; `rdms` ({'on', 'off'}
-        pair distances) replaces the distances of the spike counts."""
+        pair distances) replaces the distances of the spike counts; `apl_counts` (E82: the APL-on and APL-off
+        kernel-weighted counts) replaces the spike counts in the APL-effect statistics only."""
         if rdms is None:
             on = H.model_rdms(r_on, s_on)[v]
             off = H.model_rdms(r_off, s_off)[v]
@@ -1114,7 +1240,12 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
             terms['excess_on'] = ((out['excess_on_block'] - out['excess_on_other'] - EXCESS_DIFF_TARGET)
                 / EXCESS_DIFF_SCALE) ** 2
         if apl:
-            out.update(apl_effect_terms(on, off, s_on, s_off, apl_data, cal_target))
+            if apl_counts is None:
+                out.update(apl_effect_terms(on, off, s_on, s_off, apl_data, cal_target))
+            else:
+                w_on, w_off = apl_counts
+                out.update(apl_effect_terms(H.pair_distances(w_on, 'cosine'), H.pair_distances(w_off, 'cosine'), w_on,
+                    w_off, apl_data, cal_target, responders_on=(s_on.astype(float) >= 2.0)))
             opk = odors_per_kc(r_off)
             out.update({f'opk_off_{b}': float(v) for b, v in zip(OPK_BINS, opk)})
             out['opk_off_dist'] = float(0.5 * np.abs(opk - opk_data).sum())
@@ -1170,6 +1301,14 @@ def make_loss(data: dict, data_rates: Dict[str, pd.Series], orn_pairs: pd.Series
         loss_fn.apl.update(apl_data_units=apl_data_units, data_mean=float(apl_data.mean()), data_n_pairs=int(apl_data.notna().sum()),
             data_sha256=hashlib.sha256(np.ascontiguousarray(H.canonical_pairs(apl_data).to_numpy(dtype='<f8')).tobytes()).hexdigest())
     loss_fn.band_units = band_units
+    # (E82) the count kernel (rise, decay) or None
+    loss_fn.count_kernel = count_kernel
+    if count_kernel is not None:
+        import inspect
+        # (the harness function's window, reference time and onset: its defaults)
+        loss_fn.apl.update(count_kernel=dict(rise=count_kernel[0], decay=count_kernel[1],
+            function='kc_remapping_harness.kernel_weighted_counts', defaults={k: p.default for k, p in
+            inspect.signature(H.kernel_weighted_counts).parameters.items() if p.default is not inspect.Parameter.empty}))
     # (E73 part C) the reading's settings, or None; the held calibration ('calibrate' 'start'; cleared per fit)
     loss_fn.zcell = zcell if use_zcell else None
     loss_fn.zcell_held = held
@@ -1229,7 +1368,8 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     init_params: Optional[str] = None, kc_thr_factors: Optional[np.ndarray] = None,
     init_exact_expect: Optional[dict] = None, kckc_fixed: Optional[float] = None,
     block_proxy: Optional[dict] = None, kc_spiking: Optional[dict] = None,
-    kc_thr_factor_fixed: Optional[np.ndarray] = None, claw_transfer: Optional[dict] = None):
+    kc_thr_factor_fixed: Optional[np.ndarray] = None, claw_transfer: Optional[dict] = None,
+    protocol: Optional[dict] = None, spike_times: bool = False):
     """One joint fit; `kc_thr_factors` (K x KCs, `jitter_factors`) adds the K jittered runs of
     each condition (`jitter_conditions`) to every evaluation; `init_exact_expect` (not None)
     starts exactly at the `init_from` fit's parameters (`init_from_fit` with exact=True);
@@ -1243,7 +1383,11 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     threshold in every condition (the 'on' and 'off' runs, and the jittered runs on top of their
     jitter), through `optimize_mb_model_params`' condition_kc_thr_factors; `claw_transfer` (E78:
     `claw_transfer_kws`, the per-claw knee's sub-threshold gain / softplus width) is a fixed model kwarg of
-    every simulation of the fit (`base_kws`), with `claw_thr`."""
+    every simulation of the fit (`base_kws`), with `claw_thr`; `protocol` (E82: `protocol_kws`, the odor
+    pulse's and the simulation's ends and the APL's time constant) likewise; `spike_times` simulates the 'on'
+    and 'off' conditions with their spike times in every evaluation (optimize_mb_model_params'
+    condition_spike_times: the loss gets them, e.g. for --count-kernel, and the result has the best
+    evaluation's as 'condition_spike_times')."""
     from al_analysis.mb_model import optimize_mb_model_params
     wAPLKC = breadth_weights(wnorm['wAPLKC'], breadth, k)
     r19 = None if (claw_thr is None or apl_drive != 'claws') else e19_row(claw_thr, k, kckc0)
@@ -1344,6 +1488,16 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
     if block_proxy is not None and claw_transfer:
         # (likewise without the claw transfer's sub-threshold gain / width)
         raise NotImplementedError('--block-proxy with --claw-thr-subgain / --claw-thr-width')
+    protocol = dict(protocol or {})
+    if block_proxy is not None and (protocol or spike_times):
+        # (the proxy's replays are built for olfsysm's pulse and its spike counts)
+        raise NotImplementedError('--block-proxy with --stim-end / --sim-end / --apl-taum / spike times')
+    bad = set(protocol) - set(TIMING_KEYS) - {'apl_taum'}
+    if bad:
+        raise ValueError(f'unknown protocol kwargs {sorted(bad)}')
+    # (E82; only when asked, so the default path is unchanged)
+    if spike_times:
+        hook_kws['condition_spike_times'] = ('on', 'off')
     if block_proxy is not None:
         import noise_proxy
         import E43_model_trial_noise as E43
@@ -1360,7 +1514,8 @@ def fit_one(k: float, orn, initial, wnorm, breadth, loss_fn, *, kckc0: float, ma
             initial_params=init, bounds=bounds, tie_apl_weights=tie, method=method,
             maxfev=maxfev, optimizer_kws=opt_kws, verify=False, verbose=verbose,
             **base_kws(claw_thr, apl_drive, claw_transfer), **wiring_kws, _wAPLKC=wAPLKC, _wKCAPL=wnorm['wKCAPL'],
-            _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU, **kc_spiking
+            _wAPLPN=wnorm['wAPLPN'], _wPNAPL=wnorm['wPNAPL'], kc_kc_inh=kckc0, kc_kc_tau=TAU, **kc_spiking,
+            **protocol
         )
     return res, init, bounds
 
@@ -1584,6 +1739,23 @@ def main() -> None:
     ap.add_argument('--claw-thr-width', type=float, default=None, metavar='W',
         help='(E78) the per-claw knee is a softplus of width W Hz (olfsysm claw_thr_width; E22); fixed, as --claw-thr-subgain; '
             'needs --claw-thr; off by default; tag part w<W>')
+    ap.add_argument('--stim-end', type=float, default=None, metavar='S',
+        help="(E82) the odor pulse ends S s after onset (mb_model time_stim_end; olfsysm's 0.5 s by default) in every "
+            'simulation of the fit and in the breadth run; tag suffix _pulse<S> (with end<E> unless --sim-end is S + 0.25)')
+    ap.add_argument('--sim-end', type=float, default=None, metavar='E',
+        help="(E82) the simulation ends E s after onset (mb_model time_end; olfsysm's 0.75 s by default; spike counts "
+            'are over the whole simulation), as --stim-end; tag suffix _end<E> without --stim-end')
+    ap.add_argument('--apl-taum', type=float, default=None, metavar='T',
+        help="(E82) the APL's membrane time constant in seconds (mb_model apl_taum; olfsysm's 0.05 by default) in every "
+            'simulation of the fit; tag suffix _apltau<T in ms>')
+    ap.add_argument('--count-kernel', type=float, nargs=2, default=None, metavar=('RISE', 'DECAY'),
+        help="(E82; with --loss apl) the APL-effect terms on kernel-weighted counts: each spike weighted by the area inside "
+            "the flies' window (2.0 to 8.1 s after onset) of the kernel (1 - exp(-t / RISE)) exp(-t / DECAY), over a spike's "
+            "at the window's start (seconds; RISE 0 and DECAY inf are the limits); the responses stay two or more spikes; "
+            'saves the best fit\'s spike times; tag suffix _kr<RISE>d<DECAY>')
+    ap.add_argument('--save-spike-times', action='store_true',
+        help="(E82) save the best fit's spike times (<tag>_<on|acute_off>_spike_times.parquet); every evaluation then "
+            'also returns them (always with --count-kernel)')
     ap.add_argument('--smoke', action='store_true', help='time a few evaluations and exit')
     ap.add_argument('--figure-only', action='store_true', help='only redraw the figures from saved results')
     args = ap.parse_args()
@@ -1719,6 +1891,27 @@ def main() -> None:
         zcell_tag = ('zc' + ('apl' if args.apl_readout == 'zcell' else '') + ('rate' if args.rate_criterion == 'zcell' else '')
             + ('-lin' if zcell['amp'] == 'linear' else '') + ('' if zq == q_window else f'-q{zq:.3f}')
             + ('-cal1' if zcell['calibrate'] == 'start' else '') + '_')
+    # (E82) the flies' recording protocol: the pulse's and the simulation's ends, the APL's time constant, the count kernel
+    try:
+        protocol = protocol_kws(args.stim_end, args.sim_end, args.apl_taum)
+    except ValueError as e:
+        ap.error(str(e))
+    count_kernel = None if args.count_kernel is None else (float(args.count_kernel[0]), float(args.count_kernel[1]))
+    if count_kernel is not None:
+        if args.loss != 'apl':
+            ap.error('--count-kernel needs --loss apl (it changes the APL-effect terms only)')
+        if use_zcell:
+            ap.error('--count-kernel is not defined for --apl-readout zcell / --rate-criterion zcell (they read spike counts)')
+        if not (np.isfinite(count_kernel[0]) and count_kernel[0] >= 0 and count_kernel[1] > 0):
+            ap.error('--count-kernel: RISE must be finite and not negative, DECAY positive (inf allowed)')
+    save_spike_times = bool(args.save_spike_times or count_kernel is not None)
+    if protocol or save_spike_times:
+        if args.block_proxy > 0:
+            ap.error('--stim-end / --sim-end / --apl-taum / --count-kernel / --save-spike-times with --block-proxy is not supported')
+        if args.apl_drive == 'spikes_only':
+            ap.error('--stim-end / --sim-end / --apl-taum / --count-kernel / --save-spike-times with --apl-drive spikes_only '
+                'is not supported (its base is re-tuned at olfsysm\'s pulse)')
+    proto_tag = protocol_tag(protocol, count_kernel)
     loss_fn = make_loss(data, data_rates, orn_pairs, drive, ref=ref, structure=(args.loss in ('structure', 'rho', 'apl')), variant=args.loss,
         rate_target=rate_target, block_target=block_target, jitter_k=jit_k, jitter_terms=args.jitter_terms,
         jitter_trials=args.jitter_trials, proxy=proxy,
@@ -1726,7 +1919,11 @@ def main() -> None:
             apl_opk_term=args.apl_opk_term, rate_criterion=args.rate_criterion, zcell=zcell,
             **(dict(apl_class_term=True, apl_class_form=class_form) if args.apl_class_term else {}),
             **(dict(apl_data_units=args.apl_data_units) if args.apl_data_units != 'z' else {})) if args.loss == 'apl' else {}),
-        band_units=args.band_units)
+        band_units=args.band_units, **({} if count_kernel is None else dict(count_kernel=count_kernel)))
+    if protocol or count_kernel is not None:
+        print(f'protocol (E82): {protocol or "olfsysm defaults"}'
+            + ('' if count_kernel is None else f'; APL-effect terms on kernel-weighted counts (rise {count_kernel[0]:g} s, '
+            f'decay {count_kernel[1]:g} s)') + f'; tag suffix {proto_tag}', flush=True)
     if args.band_units == 'noise':
         print(f"KC data of the two-spike rate terms in baseline-noise units (above {H.data_target('noise_threshold'):.4f}): "
             f"ratio target {loss_fn.ratio_target:.3f}"
@@ -1787,7 +1984,8 @@ def main() -> None:
         apl_drive=args.apl_drive, base_params=args.base_params, info=base_info, input_tag=input_tag,
         wiring_matrix=wiring_matrix, wiring_tag=args.wiring_tag,
         **({} if args.kc_thr_input_exp is None else dict(kc_thr_input_exp=args.kc_thr_input_exp)),
-        **({} if not claw_transfer else dict(claw_transfer=claw_transfer))
+        **({} if not claw_transfer else dict(claw_transfer=claw_transfer)),
+        **({} if not timing_kws(protocol) else dict(timing=timing_kws(protocol)))
     )
     # (E71) the fixed input-scaled threshold factor, in the model's KC order (that of the breadth run), and
     # the pre-pass's record (kept out of base_info, which describes a spike-only base when it is not empty)
@@ -1843,7 +2041,7 @@ def main() -> None:
 
     fits_path = res_dir / 'fits.csv'
     for k in args.exponents:
-        tag = f'{prefix}k{k:g}{args.tag}'
+        tag = f'{prefix}k{k:g}{proto_tag}{args.tag}'
         t0 = time.time()
         # (E73, --zcell-calibrate start: each fit calibrates the reading on its own start)
         loss_fn.zcell_held.clear()
@@ -1864,7 +2062,9 @@ def main() -> None:
             aplkc_min=args.aplkc_min, apl_drive=args.apl_drive, init_params=args.init_params,
             kc_thr_factors=jit_factors, init_exact_expect=exact_expect, kckc_fixed=args.kckc_fixed,
             block_proxy=proxy, kc_spiking=kc_spiking, kc_thr_factor_fixed=thr_in_factor,
-            **({} if not claw_transfer else dict(claw_transfer=claw_transfer))
+            **({} if not claw_transfer else dict(claw_transfer=claw_transfer)),
+            **({} if not protocol else dict(protocol=protocol)),
+            **({} if not save_spike_times else dict(spike_times=True))
         )
         hist = res['history']
         hist.to_csv(res_dir / f'history_{tag}.csv')
@@ -1884,6 +2084,10 @@ def main() -> None:
         for cond, (r, sp) in (('on', (r_on, s_on)), ('acute_off', (r_off, s_off))):
             r.to_parquet(out_dir / f'{tag}_{cond}_responses.parquet')
             sp.to_parquet(out_dir / f'{tag}_{cond}_spike_counts.parquet')
+        if save_spike_times:
+            # (E82) the best evaluation's spike times, as E80_pulse.py saves them
+            for cond, c in (('on', 'on'), ('acute_off', 'off')):
+                res['condition_spike_times'][c].to_parquet(out_dir / f'{tag}_{cond}_spike_times.parquet')
         if jit_k > 0:
             # the trial means of the best fit's jittered runs (responses: fraction of runs)
             for cond, c in (('on', 'on'), ('acute_off', 'off')):
@@ -1927,6 +2131,11 @@ def main() -> None:
             **(dict(band_units=args.band_units) if args.band_units != 'z' else {}),
             # (E76: the KC data's units in the APL-effect term; absent when Yang's z, the default)
             **(dict(apl_data_units=args.apl_data_units) if args.apl_data_units != 'z' else {}),
+            # (E82: the pulse's and the simulation's ends, the APL's time constant and the count kernel; absent when not
+            # given)
+            **protocol,
+            **(dict(count_kernel_rise=count_kernel[0], count_kernel_decay=count_kernel[1]) if count_kernel is not None
+                else {}),
             # (E73 part C: the per-KC session z-score reading's settings; absent when not used)
             **(dict(rate_criterion=args.rate_criterion, zcell_q=loss_fn.zcell['q'], zcell_map=loss_fn.zcell['amp'],
                 zcell_calibrate=loss_fn.zcell['calibrate'], zcell_drift=loss_fn.zcell['drift'])
@@ -2016,6 +2225,17 @@ def main() -> None:
                 'input below the knee and all of the excess above it) and / or softplus width (claw_thr_width); the breadth '
                 'pre-pass (the base at its tuned parameters, APL off) likewise, its fixed_thr re-tuned to the transfer-free '
                 'pre-pass\'s APL-off response count'))) if claw_transfer else {}),
+            **(dict(protocol=dict(model_kws=protocol, breadth_timing=timing_kws(protocol) or None,
+                count_kernel=(loss_fn.apl or {}).get('count_kernel'), spike_times_saved=save_spike_times,
+                note=('E82: every simulation (APL on and APL off) has these fit_mb_model kwargs (time_stim_end / time_end: '
+                'the odor pulse\'s and the simulation\'s ends in seconds after onset, spike counts over the whole '
+                'simulation; apl_taum: the APL\'s membrane time constant); with a timing the breadth comes from the base\'s '
+                'APL-off run at that pulse (and the E71 / E78 pre-passes on it); with count_kernel the APL-effect terms '
+                '(both readouts, block_cal, the calibrated mean distances) are on kernel-weighted counts (each spike '
+                'weighted by its kernel\'s area inside the window over that of a spike at the window\'s start), the '
+                'calibrated readout\'s K calibrated on the responders (two or more spikes) of the weighted APL-on counts; '
+                'the responses of every rate term stay two or more spikes')))
+                if (protocol or save_spike_times) else {}),
             **(dict(block_proxy=dict(proxy, note=('the loss\'s block term on the batched network-aware proxy (noise_proxy.'
                 'make_block_proxy_hook): at every evaluation each condition is simulated once more with the thresholds out of reach '
                 'and once with the voltages saved, every KC\'s drive is reconstructed, and the trials are replayed at the pipeline\'s '
