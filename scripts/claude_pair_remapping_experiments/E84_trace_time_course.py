@@ -602,20 +602,16 @@ def recording_tables() -> Tuple[Dict[str, np.ndarray], Dict[str, list], List[tup
     wl = windows()
     row_keys = [(u, e, w[0]) for u in ('z', 'noise') for e in ESTIMATORS for w in wl]
     path = work_dir() / 'recording_tables.npz'
-    rp = local_dir() / 'rates_recordings.csv'
-    if path.exists() and rp.exists():
+    if path.exists():
         with np.load(path, allow_pickle=False) as z:
             meta = json.loads(str(z['meta']))
             if meta['row_keys'] == [list(r) for r in row_keys]:
                 tabs = {g: z[g] for g in GENOS}
                 keys = {g: [tuple(k) for k in meta['keys'][g]] for g in GENOS}
-                return tabs, keys, row_keys, pd.read_csv(rp, dtype={'date': str, 'hemibrain': str})
-    thr = float(H.data_target('noise_threshold'))
+                return tabs, keys, row_keys, recording_rates()
     tabs = {g: [] for g in GENOS}
     keys = {g: [] for g in GENOS}
-    rate_rows = []
     wins = [(a, b) for _, a, b in wl]
-    ti = [w[0] for w in wl].index('target')
     for g, rec in YRN.RECORDINGS:
         t0 = time.time()
         c = load_cache(g, rec)
@@ -632,29 +628,6 @@ def recording_tables() -> Tuple[Dict[str, np.ndarray], Dict[str, list], List[tup
                     else:
                         d = H.noise_free_pair_distances(X, ODORS)
                     rows.append(_pairs_array(d))
-            if u == 'noise':
-                Tp = arrange(W, c, [SOLVENT])[:, :, 0, :]                  # (3, KCs, nW)
-                for crit in ('trialmean', 'single'):
-                    blank = Tp.mean(axis=0) if crit == 'trialmean' else Tp.reshape(-1, Tp.shape[-1])
-                    fpr = float((blank[:, ti] > thr).mean())
-                    for wi, (name, a, b) in enumerate(wl):
-                        if wi == ti:
-                            th = thr
-                        elif fpr > 0:
-                            th = float(np.quantile(blank[:, wi], 1 - fpr))
-                        else:
-                            th = float(blank[:, wi].max())
-                        X = T[..., wi]
-                        R = (X.mean(axis=0) > th) if crit == 'trialmean' else (X > th)
-                        per_odor = R.mean(axis=tuple(i for i in range(R.ndim) if i != R.ndim - 1))
-                        row = dict(genotype=g, date=key[0], fly_num=key[1], hemibrain=key[2], criterion=crit, window=name,
-                                   t0=a, t1=b, threshold=th, blank_fpr_target=fpr,
-                                   blank_rate=float(((Tp.mean(axis=0) if crit == 'trialmean' else Tp)[..., wi] > th).mean()),
-                                   rate=float(R.mean()), **{f'rate_{o}': float(per_odor[j]) for j, o in enumerate(ODORS)})
-                        if crit == 'trialmean':
-                            n = R.sum(axis=1)
-                            row.update({f'opk_{lab}': float(((n >= lo) & (n <= hi)).mean()) for lab, lo, hi in OPK_BINS})
-                        rate_rows.append(row)
         tabs[g].append(np.stack(rows))
         keys[g].append(key)
         print(f'B tables {g} {rec}: {time.time() - t0:.0f} s', flush=True)
@@ -662,9 +635,70 @@ def recording_tables() -> Tuple[Dict[str, np.ndarray], Dict[str, list], List[tup
     tabs = {g: np.stack(v) for g, v in tabs.items()}
     meta = dict(row_keys=[list(r) for r in row_keys], keys={g: [list(k) for k in v] for g, v in keys.items()})
     np.savez(path, meta=np.array(json.dumps(meta)), **tabs)
+    return tabs, keys, row_keys, recording_rates()
+
+
+RATE_CRITERIA = ('trialmean', 'single', 'trialmean_mad', 'single_mad', 'trialmean_fixed')
+
+
+def _robust_sd(x: np.ndarray, axis: int = 0) -> np.ndarray:
+    med = np.median(x, axis=axis, keepdims=True)
+    return 1.4826 * np.median(np.abs(x - med), axis=axis)
+
+
+def recording_rates() -> pd.DataFrame:
+    """Per recording, criterion and window, the response rates in baseline-noise units (local_dir()/rates_recordings.csv,
+    cached). The bands' criterion (a trial mean above `noise_threshold`) holds at the target's window; elsewhere the
+    threshold is, per recording: 'trialmean' / 'single' (trial means / single trials), the quantile of the solvent's
+    presentations' values in that window that keeps their share above it at the target window's (which includes the
+    KCs that respond to the solvent); '..._mad', the target's threshold scaled by the robust SD (1.4826 MAD) of the
+    solvent's values in that window over the target window's (the same false-positive rate under Gaussian noise);
+    'trialmean_fixed', the bands' threshold in every window."""
+    rp = local_dir() / 'rates_recordings.csv'
+    if rp.exists():
+        d = pd.read_csv(rp, dtype={'date': str, 'hemibrain': str})
+        if set(d.criterion) == set(RATE_CRITERIA):
+            return d
+    thr = float(H.data_target('noise_threshold'))
+    wl = windows()
+    wins = [(a, b) for _, a, b in wl]
+    ti = [w[0] for w in wl].index('target')
+    rate_rows = []
+    for g, rec in YRN.RECORDINGS:
+        c = load_cache(g, rec)
+        key = tuple(c['meta']['key'])
+        W = window_values(c, wins, 'noise')
+        T = arrange(W, c, ODORS)                                           # (3, KCs, 16, nW)
+        Tp = arrange(W, c, [SOLVENT])[:, :, 0, :]                          # (3, KCs, nW)
+        for crit in RATE_CRITERIA:
+            single = crit.startswith('single')
+            blank = Tp.reshape(-1, Tp.shape[-1]) if single else Tp.mean(axis=0)
+            fpr = float((blank[:, ti] > thr).mean())
+            rsd = _robust_sd(blank, axis=0)
+            for wi, (name, a, b) in enumerate(wl):
+                if wi == ti or crit == 'trialmean_fixed':
+                    th = thr
+                elif crit.endswith('_mad'):
+                    th = float(thr * rsd[wi] / rsd[ti])
+                elif fpr > 0:
+                    th = float(np.quantile(blank[:, wi], 1 - fpr))
+                else:
+                    th = float(blank[:, wi].max())
+                X = T[..., wi]
+                R = (X > th) if single else (X.mean(axis=0) > th)
+                per_odor = R.mean(axis=tuple(i for i in range(R.ndim) if i != R.ndim - 1))
+                row = dict(genotype=g, date=key[0], fly_num=key[1], hemibrain=key[2], criterion=crit, window=name, t0=a,
+                           t1=b, threshold=th, blank_fpr_target=fpr, blank_robust_sd=float(rsd[wi]),
+                           blank_rate=float((blank[:, wi] > th).mean()), rate=float(R.mean()),
+                           **{f'rate_{o}': float(per_odor[j]) for j, o in enumerate(ODORS)})
+                if not single:
+                    n = R.sum(axis=1)
+                    row.update({f'opk_{lab}': float(((n >= lo) & (n <= hi)).mean()) for lab, lo, hi in OPK_BINS})
+                rate_rows.append(row)
+        del c
     rates = pd.DataFrame(rate_rows)
     rates.to_csv(rp, index=False)
-    return tabs, keys, row_keys, rates
+    return rates
 
 
 _POP: Dict[str, Dict[str, np.ndarray]] = {}
@@ -740,15 +774,47 @@ def _stat_fn(row_keys: List[tuple], main_target: np.ndarray, pops: Dict[str, Dic
     return fn
 
 
-def floor_ceiling(tab_g: Dict[str, np.ndarray], row: int) -> Tuple[float, float, float, float]:
-    """(floor of the APL-effect loss, its 90 % interval, ceiling of ρ) of one row by the target's own resampling
-    (data_targets.apl_effect_resamples, seed 0)."""
+def floor_ceiling(tab_g: Dict[str, np.ndarray], seed: int = 0) -> Dict[str, np.ndarray]:
+    """The floor of the APL-effect loss (its mean and 90 % interval over 1000 resamples of recordings: the RMS difference
+    of a resampled effect from the measured one) and the ceiling of ρ (Spearman-Brown-corrected ρ between the effects of
+    500 random split halves of the recordings) of every row of `tab_g` ({genotype: (recordings, rows, 120)}), with the
+    random draws of data_targets.apl_effect_resamples in the same order from the same seed (they do not depend on the
+    data, so every row gets the draws the registry's computation would give it). Returns {'floor', 'floor_lo',
+    'floor_hi', 'ceiling'}: arrays over rows."""
+    rng = np.random.default_rng(seed)
+    C, T = tab_g['TNT3c'], tab_g['TNT']
+    eff = C.mean(0) - T.mean(0)
+    rmse = []
+    for _ in range(1000):
+        ic = rng.integers(0, len(C), len(C))
+        it = rng.integers(0, len(T), len(T))
+        e_b = C[ic].mean(0) - T[it].mean(0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            rmse.append(np.sqrt(np.nanmean((e_b - eff) ** 2, axis=1)))
+    rhos = []
+    for _ in range(500):
+        pc, pt = rng.permutation(len(C)), rng.permutation(len(T))
+        a = C[pc[:len(C) // 2]].mean(0) - T[pt[:len(T) // 2]].mean(0)
+        b = C[pc[len(C) // 2:]].mean(0) - T[pt[len(T) // 2:]].mean(0)
+        rhos.append(_spearman_rows(a, b))
+    rmse, rhos = np.array(rmse), np.array(rhos)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        r = np.nanmean(rhos, axis=0)
+        lo, hi = np.nanpercentile(rmse, [5, 95], axis=0)
+        return dict(floor=rmse.mean(0), floor_lo=lo, floor_hi=hi, ceiling=np.sqrt(2 * r / (1 + r)))
+
+
+def floor_ceiling_check(tab_g: Dict[str, np.ndarray], row: int) -> Dict[str, float]:
+    """data_targets.apl_effect_resamples itself on one row, against `floor_ceiling`'s values for it."""
     import data_targets as DT
     recs = {g: pd.DataFrame(t[:, row, :], columns=_PAIR_IDX) for g, t in tab_g.items()}
     _, _, boot_rmse, sh_rho = DT.apl_effect_resamples(recs)
     r = float(np.nanmean(sh_rho))
-    lo, hi = np.percentile(boot_rmse, [5, 95])
-    return float(np.mean(boot_rmse)), float(lo), float(hi), float(np.sqrt(2 * r / (1 + r)))
+    fc = floor_ceiling({g: t[:, [row], :] for g, t in tab_g.items()})
+    return dict(floor_dt=float(np.mean(boot_rmse)), ceiling_dt=float(np.sqrt(2 * r / (1 + r))),
+                floor_vec=float(fc['floor'][0]), ceiling_vec=float(fc['ceiling'][0]))
 
 
 def part_b(n_boot: int = N_BOOT) -> None:
@@ -770,6 +836,7 @@ def part_b(n_boot: int = N_BOOT) -> None:
     fn = _stat_fn(row_keys, main_target, pops)
     wl = {w[0]: (w[1], w[2]) for w in windows()}
     eff_rows, pop_rows = [], []
+    fc_check = dict(common_error_check=common_check)
     for sname, sub in subsets().items():
         sel = {g: [keys[g].index(k) for k in sub[g]] for g in GENOS}
         if any(len(v) == 0 for v in sel.values()):
@@ -790,15 +857,22 @@ def part_b(n_boot: int = N_BOOT) -> None:
                 else:
                     eff_rows.append(dict(r, statistic=stat))
         if sname in ('all', 'six_typical'):
+            fc = floor_ceiling(tg)
+            if sname == 'all':
+                chk = floor_ceiling_check(tg, row_keys.index(('z', 'measured', 'target')))
+                fc_check.update(chk, registry_floor=H.data_target('apl_effect_rmse_floor'),
+                                registry_ceiling=H.data_target('apl_effect_rho_ceiling'))
+                print(f'B: floor / ceiling check {chk}', flush=True)
             for i, (u, e, w) in enumerate(row_keys):
-                fl, flo, fhi, ceil = floor_ceiling(tg, i)
                 base = dict(subset=sname, units=u, estimator=e, window=w, t0=wl[w][0], t1=wl[w][1], n_ctrl=len(sel['TNT3c']),
                             n_tnt=len(sel['TNT']))
-                eff_rows.append(dict(base, statistic='loss_floor', value=fl, lo_rec=flo, hi_rec=fhi))
-                eff_rows.append(dict(base, statistic='rho_ceiling', value=ceil))
+                eff_rows.append(dict(base, statistic='loss_floor', value=float(fc['floor'][i]), lo_rec=float(fc['floor_lo'][i]),
+                                     hi_rec=float(fc['floor_hi'][i])))
+                eff_rows.append(dict(base, statistic='rho_ceiling', value=float(fc['ceiling'][i])))
         print(f'B: subset {sname} done, {time.time() - t0:.0f} s', flush=True)
     ef = pd.DataFrame(eff_rows)
     ef.to_csv(out_dir() / 'effect_by_window.csv', index=False)
+    (out_dir() / 'part_b_checks.json').write_text(json.dumps(fc_check, indent=1, default=float) + '\n')
     pd.DataFrame(pop_rows).to_csv(out_dir() / 'common_error_by_window.csv', index=False)
     # per pair, all and the six typical
     prs = []
@@ -905,7 +979,7 @@ def rates_by_window(rates: pd.DataFrame, n_boot: int) -> None:
                            ratio_lo=float(np.percentile(bs, 5)), ratio_hi=float(np.percentile(bs, 95)),
                            threshold_ctrl=float(v['TNT3c'].threshold.mean()), threshold_tnt=float(v['TNT'].threshold.mean()),
                            blank_fpr=float(pd.concat(v.values()).blank_fpr_target.mean()))
-                if crit == 'trialmean':
+                if not crit.startswith('single'):
                     for g in GENOS:
                         for lab, _, _ in OPK_BINS:
                             row[f'opk_{lab}_{g}'] = float(v[g][f'opk_{lab}'].mean())
@@ -1589,69 +1663,158 @@ def measured_gates(E82, rd: pd.DataFrame, pp: pd.DataFrame, res: pd.DataFrame, a
 # ---------------------------------------------------------------------------
 # part E: checks
 
+TAIL_END = (35.0, 40.0)
+
+
+def _tail_tau(y: np.ndarray, t: np.ndarray) -> float:
+    """Decay time constant of a mean trace from 20 s to the excerpt's end (a * exp(-t / tau), tau within 2 to 200 s)."""
+    from scipy.optimize import curve_fit
+    m = t >= 20.0
+    try:
+        p, _ = curve_fit(lambda x, a, tau: a * np.exp(-(x - 20.0) / tau), t[m], y[m], p0=(max(float(y[m][0]), 1e-3), 15.0),
+                         bounds=([0, 2.0], [np.inf, 200.0]), maxfev=20000)
+        return float(p[1])
+    except Exception:
+        return np.nan
+
+
 def carry_over() -> None:
-    """carry_over.csv and carry_over_pairs.csv. Per recording, in baseline-noise units at the target's window: the next
-    presentation's baseline shift (its pre-onset mean of Fc minus the previous presentation's) and window response
-    for KCs that responded to the previous presentation (single trial above the bands' criterion) and for the others;
-    the carry-over slope beta (the response of an entry's repeat, its mean over repeats removed, regressed through 0 on
-    the previous presentation's response, likewise with the mean over the entry's three predecessors removed), per
-    genotype; and the per-pair bias of the trial-mean distances and the APL effect (Yang's z, measured and noise-free)
-    when each single trial is corrected by beta times its predecessor's response."""
+    """carry_over.csv, carry_over_summary.csv and carry_over_pairs.csv: the carry-over of a response into the next
+    presentation, per recording, in baseline-noise units at the target's window.
+
+    - Observed: for KCs that responded to the previous presentation (single trial above the bands' criterion), the next
+      presentation's baseline shift (its pre-onset mean of Fc minus the previous presentation's) and its window response;
+      within entries (an entry's repeats preceded by a response of the KC against its repeats that were not), the
+      difference of the window response; and the slope of an entry's deviation from its mean over repeats on its
+      predecessor's (carry-over and any state shared by consecutive presentations together).
+    - The tail correction: each KC's signal 35 to 40 s after the previous onset (its own excerpt) extrapolated with the
+      recording's decay time constant (the responders' mean trace from 20 s on) over the next presentation's baseline
+      and window (at the actual onset gap), the difference being the tail's part of the next response. Each single trial
+      is corrected by it (in Yang's z for the distances) and the per-pair bias of the trial-mean and noise-free distances
+      and of the APL effect is the corrected minus the measured.
+    - The calibration: on entries silent on their other repeats (mean below 1 noise SD, where a gain shared by
+      consecutive presentations has little to act on), the observed difference of the next window response after a
+      responder and after a non-responder against the tail model's prediction for the same trials; their ratio, pooled
+      per genotype and clipped to 0 to 1 (a negative ratio is an offset that is not a decaying tail), scales the tail
+      correction in a second, calibrated reading ('_cal' columns).
+    """
     thr = float(H.data_target('noise_threshold'))
+    TR = _traces_all()
     rows, xs, ys = [], {g: [] for g in GENOS}, {g: [] for g in GENOS}
-    cache = {}
+    dist = {g: {k: [] for k in ('measured', 'noise_free', 'measured_corr', 'noise_free_corr', 'measured_cal', 'noise_free_cal')}
+            for g in GENOS}
+    keep = {}
+    silent_obs = {g: [0.0, 0.0] for g in GENOS}
     for g, rec in YRN.RECORDINGS:
         c = load_cache(g, rec)
         m = c['meta']
-        Wn = window_values(c, [TARGET], 'noise')[..., 0]                    # (51, KCs), time order
-        Wz = window_values(c, [TARGET], 'z')[..., 0]
+        key = tuple(m['key'])
+        v, B = m['volume_rate'], m['B']
+        Wn = window_values(c, [TARGET, TAIL_END], 'noise')                  # (51, KCs, 2)
+        Wz = window_values(c, [TARGET, TAIL_END], 'z')
+        Rn, En = Wn[..., 0], Wn[..., 1]
+        Rz, Ez = Wz[..., 0], Wz[..., 1]
         sb = c['sd_base_0.7']
-        prev = np.vstack([np.zeros((1, Wn.shape[1])), Wn[:-1]])            # predecessor's response (none for the first)
-        shift = np.vstack([np.full((1, Wn.shape[1]), np.nan), np.diff(c['base_fc'], axis=0)]) / sb[None]
-        resp_prev = prev > thr
-        resp_prev[0] = False
-        others = ~resp_prev
-        others[0] = False
-        rows.append(dict(genotype=g, recording=rec_id(tuple(m['key'])), prev_responders=int(resp_prev.sum()),
-                         prev_response_mean=float(prev[resp_prev].mean()), next_window_after_responders=float(Wn[resp_prev].mean()),
-                         next_window_after_others=float(Wn[others].mean()),
-                         baseline_shift_after_responders=float(np.nanmean(shift[resp_prev])),
-                         baseline_shift_after_others=float(np.nanmean(shift[others]))))
+        y, _, _ = _marginal(TR[(g, key)], 'resp')
+        tau = _tail_tau(y, TR[(g, key)]['t'])
+        on = np.array(m['onsets'])
+        # the tail's part of each presentation's response: (window mean - baseline mean) / end mean of exp(-t / tau)
+        f = np.zeros(len(on))
+        e_lo, e_hi = H.window_volumes(TAIL_END, v)
+        t_end = np.arange(e_lo, e_hi) / v
+        for i in range(1, len(on)):
+            gap = int(on[i] - on[i - 1])
+            tb = (gap + np.arange(-B, 0)) / v
+            tw = (gap + np.arange(m['S'], m['P'])) / v
+            f[i] = (np.exp(-tw / tau).mean() - np.exp(-tb / tau).mean()) / np.exp(-t_end / tau).mean()
+        prev_n = np.vstack([np.zeros((1, Rn.shape[1])), Rn[:-1]])
+        tail_n = np.vstack([np.zeros((1, Rn.shape[1])), En[:-1]]) * f[:, None]
+        tail_z = np.vstack([np.zeros((1, Rz.shape[1])), Ez[:-1]]) * f[:, None]
+        shift = np.vstack([np.full((1, Rn.shape[1]), np.nan), np.diff(c['base_fc'], axis=0)]) / sb[None]
+        rp = prev_n > thr
+        rp[0] = False
+        oth = ~rp
+        oth[0] = False
         idx = trial_index(c, ODORS)                                           # (3, 16)
-        y = Wn[idx]                                                           # (3, 16, KCs)
-        x = prev[idx]
-        ok = idx > 0
-        ym = y - y.mean(axis=0, keepdims=True)
-        xm = x - x.mean(axis=0, keepdims=True)
-        xs[g].append(xm[np.broadcast_to(ok[..., None], xm.shape)])
-        ys[g].append(ym[np.broadcast_to(ok[..., None], ym.shape)])
-        cache[(g, tuple(m['key']))] = (Wz, idx, sb, c['sd_full_0.7'])
+        # within entries: repeats preceded by a response of the KC against those that were not
+        R3, P3 = Rn[idx], rp[idx]                                             # (3, 16, KCs)
+        ok3 = (idx > 0)[..., None] & np.ones_like(P3, dtype=bool)
+        both = (P3 & ok3).any(0) & ((~P3) & ok3).any(0)
+        with np.errstate(invalid='ignore'):
+            a_ = np.where(P3 & ok3, R3, 0).sum(0) / (P3 & ok3).sum(0)
+            b_ = np.where((~P3) & ok3, R3, 0).sum(0) / ((~P3) & ok3).sum(0)
+        T3 = tail_n[idx]
+        with np.errstate(invalid='ignore'):
+            ta = np.where(P3 & ok3, T3, 0).sum(0) / (P3 & ok3).sum(0)
+            tb_ = np.where((~P3) & ok3, T3, 0).sum(0) / ((~P3) & ok3).sum(0)
+        # entries silent on their other repeats: observed and predicted offsets after a responder
+        other = np.full(Rn.shape, np.nan)
+        for h in range(idx.shape[0]):
+            rest = [r for r in range(idx.shape[0]) if r != h]
+            other[idx[h]] = Rn[idx[rest]].mean(axis=0)
+        sil = np.isfinite(other) & (other < 1.0)
+        sil[0] = False
+        A, Bm = sil & rp, sil & oth
+        d_obs = float(Rn[A].mean() - Rn[Bm].mean()) if A.any() and Bm.any() else np.nan
+        d_pred = float(tail_n[A].mean() - tail_n[Bm].mean()) if A.any() and Bm.any() else np.nan
+        if np.isfinite(d_obs):
+            silent_obs[g][0] += d_obs * A.sum()
+            silent_obs[g][1] += d_pred * A.sum()
+        ym = R3 - R3.mean(axis=0, keepdims=True)
+        x3 = prev_n[idx]
+        xm = x3 - x3.mean(axis=0, keepdims=True)
+        okm = np.broadcast_to((idx > 0)[..., None], xm.shape)
+        xs[g].append(xm[okm])
+        ys[g].append(ym[okm])
+        rows.append(dict(genotype=g, recording=rec_id(key), tail_tau=tau, tail_factor_median=float(np.median(f[1:])),
+                         prev_responders=int(rp.sum()), prev_response_mean=float(prev_n[rp].mean()),
+                         tail_level_35_40_after_responders=float(np.vstack([np.zeros((1, En.shape[1])), En[:-1]])[rp].mean()),
+                         baseline_shift_after_responders=float(np.nanmean(shift[rp])),
+                         baseline_shift_after_others=float(np.nanmean(shift[oth])),
+                         next_window_after_responders=float(Rn[rp].mean()), next_window_after_others=float(Rn[oth].mean()),
+                         within_entry_diff=float(np.nanmean((a_ - b_)[both])), within_entry_entries=int(both.sum()),
+                         within_entry_tail_predicted=float(np.nanmean((ta - tb_)[both])),
+                         tail_bias_after_responders=float(tail_n[rp].mean()), tail_bias_all=float(tail_n[1:].mean()),
+                         silent_after_responders_entries=int(A.sum()), silent_observed_offset=d_obs,
+                         silent_predicted_offset=d_pred))
+        keep[(g, key)] = (Rz, tail_z, idx)
+        print(f"E carry-over {g} {rec}: tau {tau:.1f} s, tail factor {np.median(f[1:]):+.3f}", flush=True)
         del c
     beta = {g: float(np.concatenate(xs[g]) @ np.concatenate(ys[g]) / (np.concatenate(xs[g]) @ np.concatenate(xs[g])))
             for g in GENOS}
-    co = pd.DataFrame(rows)
-    for g in GENOS:
-        co.loc[co.genotype == g, 'beta_genotype'] = beta[g]
-    # the per-pair bias: each trial corrected by beta times its predecessor's response (z units: beta is unitless)
-    dist = {g: {'measured': [], 'noise_free': [], 'measured_corr': [], 'noise_free_corr': []} for g in GENOS}
-    for (g, key), (Wz, idx, sb, sf) in cache.items():
-        prev = np.vstack([np.zeros((1, Wz.shape[1])), Wz[:-1]])
-        Wc = Wz - beta[g] * prev
-        for lab, W in (('', Wz), ('_corr', Wc)):
+    scale_raw = {g: float(silent_obs[g][0] / silent_obs[g][1]) for g in GENOS}
+    # (a negative ratio is an offset that is no decaying tail: no tail correction for that genotype)
+    scale = {g: float(np.clip(v, 0.0, 1.0)) for g, v in scale_raw.items()}
+    for (g, key), (Rz, tail_z, idx) in keep.items():
+        for lab, W in (('', Rz), ('_corr', Rz - tail_z), ('_cal', Rz - scale[g] * tail_z)):
             T = np.moveaxis(W[idx], 2, 1)                                     # (3, KCs, 16)
             dist[g]['measured' + lab].append(_pairs_array(H.pair_distances(pd.DataFrame(T.mean(0), columns=ODORS), 'cosine')))
             dist[g]['noise_free' + lab].append(_pairs_array(H.noise_free_pair_distances(T, ODORS)))
-    prs = []
-    summ = []
+    co = pd.DataFrame(rows)
+    co['calibration_ratio_genotype'] = co.genotype.map(scale_raw)
+    co['calibration_scale_genotype'] = co.genotype.map(scale)
+    co['slope_on_previous_genotype'] = co.genotype.map(beta)
+    prs, summ = [], []
     for est in ESTIMATORS:
         e0 = np.mean(dist['TNT3c'][est], 0) - np.mean(dist['TNT'][est], 0)
         e1 = np.mean(dist['TNT3c'][est + '_corr'], 0) - np.mean(dist['TNT'][est + '_corr'], 0)
-        b = e1 - e0
+        e2 = np.mean(dist['TNT3c'][est + '_cal'], 0) - np.mean(dist['TNT'][est + '_cal'], 0)
+        bias = e1 - e0
+        bias_cal = e2 - e0
+        bc = np.mean(dist['TNT3c'][est + '_corr'], 0) - np.mean(dist['TNT3c'][est], 0)
+        bt = np.mean(dist['TNT'][est + '_corr'], 0) - np.mean(dist['TNT'][est], 0)
         for j, (a, bb) in enumerate(_PAIR_IDX):
-            prs.append(dict(estimator=est, odor_a=a, odor_b=bb, effect=e0[j], effect_corrected=e1[j], bias=b[j]))
-        summ.append(dict(estimator=est, beta_ctrl=beta['TNT3c'], beta_tnt=beta['TNT'], max_abs_bias=float(np.abs(b).max()),
-                         mean_bias=float(b.mean()), rms_bias=float(np.sqrt((b ** 2).mean())),
-                         pairs_bias_ge_0p01=int((np.abs(b) >= 0.01).sum())))
+            prs.append(dict(estimator=est, odor_a=a, odor_b=bb, effect=e0[j], effect_corrected=e1[j], bias=bias[j],
+                            bias_ctrl_distance=bc[j], bias_tnt_distance=bt[j], effect_corrected_cal=e2[j],
+                            bias_cal=bias_cal[j]))
+        summ.append(dict(estimator=est, slope_ctrl=beta['TNT3c'], slope_tnt=beta['TNT'], max_abs_bias=float(np.abs(bias).max()),
+                         mean_bias=float(bias.mean()), rms_bias=float(np.sqrt((bias ** 2).mean())),
+                         pairs_bias_ge_0p01=int((np.abs(bias) >= 0.01).sum()),
+                         max_abs_bias_ctrl_distance=float(np.abs(bc).max()), max_abs_bias_tnt_distance=float(np.abs(bt).max()),
+                         calibration_ratio_ctrl=scale_raw['TNT3c'], calibration_ratio_tnt=scale_raw['TNT'],
+                         calibration_scale_ctrl=scale['TNT3c'], calibration_scale_tnt=scale['TNT'],
+                         max_abs_bias_cal=float(np.abs(bias_cal).max()), mean_bias_cal=float(bias_cal.mean()),
+                         rms_bias_cal=float(np.sqrt((bias_cal ** 2).mean())), pairs_bias_cal_ge_0p01=int((np.abs(bias_cal) >= 0.01).sum())))
     co.to_csv(out_dir() / 'carry_over.csv', index=False)
     pd.DataFrame(summ).to_csv(out_dir() / 'carry_over_summary.csv', index=False)
     pd.DataFrame(prs).to_csv(out_dir() / 'carry_over_pairs.csv', index=False)
@@ -1708,11 +1871,13 @@ def neuropil() -> None:
     pd.DataFrame(rows).to_csv(out_dir() / 'neuropil_by_window.csv', index=False)
 
 
-def part_e(n_boot: int = N_BOOT) -> None:
-    """Part E: carry_over.csv, carry_over_summary.csv, carry_over_pairs.csv, neuropil_by_window.csv."""
-    write_provenance('E', dict(neucoeffs=list(NEUCOEFFS)))
+def part_e(n_boot: int = N_BOOT, carry_only: bool = False) -> None:
+    """Part E: carry_over.csv, carry_over_summary.csv, carry_over_pairs.csv, neuropil_by_window.csv (not with
+    `carry_only`)."""
+    write_provenance('E' if not carry_only else 'E-carry', dict(neucoeffs=list(NEUCOEFFS), tail_end=list(TAIL_END)))
     carry_over()
-    neuropil()
+    if not carry_only:
+        neuropil()
 
 
 # ---------------------------------------------------------------------------
@@ -1955,16 +2120,18 @@ def tables() -> str:
     if (o / 'rates_by_window.csv').exists():
         rt = pd.read_csv(o / 'rates_by_window.csv')
         x = rt[(rt.subset == 'all')]
-        lines += ['## Response rates by window (baseline-noise units; the bands\' criterion at the target\'s window, elsewhere '
-                  'matched to its false-positive rate on the solvent\'s presentations)', '',
-                  '| criterion | window | control flies | APL output blocked (TNT) | APL-off / APL-on ratio |', '|---|---|---:|---:|---:|']
-        for crit in ('trialmean', 'single'):
+        lines += ['## Response rates by window (baseline-noise units; the bands\' criterion at the target\'s window; elsewhere '
+                  'trialmean / single: the solvent\'s share above it matched (it includes the KCs that respond to the solvent); '
+                  '_mad: scaled by the solvent\'s robust SD; _fixed: the same threshold)', '',
+                  '| criterion | window | control flies | APL output blocked (TNT) | APL-off / APL-on ratio | threshold (control flies) |',
+                  '|---|---|---:|---:|---:|---:|']
+        for crit in RATE_CRITERIA:
             for w in ('0 to 1 s', '1 to 2 s', 'pulse', '2-4', '4-8.1', 'target', '8.1-10.1'):
                 q = x[(x.criterion == crit) & (x.window == w)]
                 if len(q):
                     q = q.iloc[0]
                     lines.append(f"| {crit} | {w} | {_f(q.rate_ctrl, '.4f')} | {_f(q.rate_tnt, '.4f')} | {_f(q.ratio, '.2f')} "
-                                 f"({_f(q.ratio_lo, '.2f')} to {_f(q.ratio_hi, '.2f')}) |")
+                                 f"({_f(q.ratio_lo, '.2f')} to {_f(q.ratio_hi, '.2f')}) | {_f(q.threshold_ctrl, '.2f')} |")
         lines.append('')
     if (o / 'kinetics_by_recording.csv').exists():
         kr = pd.read_csv(o / 'kinetics_by_recording.csv')
@@ -2066,12 +2233,18 @@ def tables() -> str:
         co = pd.read_csv(o / 'carry_over.csv')
         lines += ['## The carry-over from the previous presentation (baseline-noise units)', '',
                   '| | control flies | APL output blocked (TNT) |', '|---|---:|---:|']
-        for col in ('prev_response_mean', 'next_window_after_responders', 'next_window_after_others',
-                    'baseline_shift_after_responders', 'baseline_shift_after_others', 'beta_genotype'):
+        for col in ('tail_tau', 'tail_factor_median', 'prev_response_mean', 'tail_level_35_40_after_responders',
+                    'baseline_shift_after_responders', 'baseline_shift_after_others', 'next_window_after_responders',
+                    'next_window_after_others', 'within_entry_diff', 'within_entry_tail_predicted', 'tail_bias_after_responders',
+                    'tail_bias_all', 'silent_observed_offset', 'silent_predicted_offset', 'calibration_ratio_genotype',
+                    'calibration_scale_genotype',
+                    'slope_on_previous_genotype'):
             lines.append(f"| {col.replace('_', ' ')} | {_f(co[co.genotype == 'TNT3c'][col].mean())} | {_f(co[co.genotype == 'TNT'][col].mean())} |")
         for r in cs.itertuples():
-            lines.append(f"| per-pair bias of the APL effect ({r.estimator}): largest / rms / pairs at 0.01 or more | "
+            lines.append(f"| per-pair bias of the APL effect ({r.estimator}), tail model: largest / rms / pairs at 0.01 or more | "
                          f"{_f(r.max_abs_bias, '.4f')} / {_f(r.rms_bias, '.4f')} / {r.pairs_bias_ge_0p01} | |")
+            lines.append(f"| the same, calibrated on silent entries | {_f(r.max_abs_bias_cal, '.4f')} / {_f(r.rms_bias_cal, '.4f')} / "
+                         f"{r.pairs_bias_cal_ge_0p01} | |")
         lines.append('')
     if (o / 'neuropil_by_window.csv').exists():
         nb = pd.read_csv(o / 'neuropil_by_window.csv')
@@ -2154,7 +2327,8 @@ def figures() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', choices=('A', 'B', 'C', 'D', 'E', 'export', 'table'), required=True)
+    ap.add_argument('--part', choices=('A', 'B', 'B-rates', 'C', 'D', 'E', 'E-carry', 'export', 'table'), required=True,
+                    help='B-rates: only the response rates of part B (rates_by_window*.csv); E-carry: only the carry-over')
     ap.add_argument('--drive-root', type=Path, default=Path('/media/yang'))
     ap.add_argument('--rebuild-cache', action='store_true')
     ap.add_argument('--n-boot', type=int, default=N_BOOT)
@@ -2164,12 +2338,14 @@ def main() -> None:
         part_a(args.drive_root, args.rebuild_cache)
     elif args.part == 'B':
         part_b(args.n_boot)
+    elif args.part == 'B-rates':
+        rates_by_window(recording_rates(), args.n_boot)
     elif args.part == 'C':
         part_c()
     elif args.part == 'D':
         part_d(args.n_boot)
-    elif args.part == 'E':
-        part_e(args.n_boot)
+    elif args.part in ('E', 'E-carry'):
+        part_e(args.n_boot, carry_only=args.part == 'E-carry')
     elif args.part == 'export':
         export_traces()
         print(f'done in {time.time() - t0:.0f} s', flush=True)

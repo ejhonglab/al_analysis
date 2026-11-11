@@ -154,3 +154,28 @@ def test_fit_tells_the_drives_apart_without_noise():
     y_h = 2.0 * H.kernel_signal(t, 1.0, 12.0, 'histogram', edges=[0.0, 0.5, 2.0], weights=[3.0, 1.0])
     f = H.fit_indicator_kernel(t, y_h, 'histogram', edges=[0.0, 0.5, 2.0], weights=[3.0, 1.0])
     assert abs(f['rise'] - 1.0) < 1e-3 and abs(f['decay'] - 12.0) < 1e-2
+
+
+def test_e84_label_parsing():
+    """E84's records: the label of a recording's hemisphere and the construct, as written in the YAML files."""
+    E84 = pytest.importorskip('E84_trace_time_course')
+    cases = [('APL labeled, immediate response.', 'L', 'label'), ('APL not labeled, immediate response.', 'L', 'nolabel'),
+             ('both labeled.', 'R', 'label'), ('Both labeled.', 'L', 'label'), ('R labeled.', 'R', 'label'),
+             ('R labeled.', 'L', 'nolabel'), ('L labeled. Manual dissection.', 'L', 'label'),
+             ('R weakly labeled.', 'R', 'label'), ('Not labeled.', 'L', 'nolabel'), ('', 'L', 'unknown')]
+    for note, hemi, want in cases:
+        assert E84.label_as_recorded(note, hemi) == want, (note, hemi)
+    assert E84.construct_as_recorded('NPGH/TubPGal80ts,UAS-TNT(84);MBnls6s') == 'TNT'
+    assert E84.construct_as_recorded('NPGH/TubPGal80ts,UAS-TNT-in(36);MBnls6s') == 'TNTin'
+    assert E84.construct_as_recorded('NPGH/TubPGal80ts,UAS-TNTin(36);MBnls6s') == 'TNTin'
+    # the queue's notes' groups: 2024-07-10 fly 2's side decides the third TNTin-nolabel recording
+    assert E84.notes_group('TNT3c', ('2024-07-10', 2, 'L'), 'L') == 'TNTin-nolabel'
+    assert E84.notes_group('TNT3c', ('2024-07-10', 2, 'L'), 'R') == 'TNTin-label'
+    assert E84.notes_group('TNT3c', ('2024-08-30', 3, 'R'), 'L') == 'TNT-nolabel'
+    assert E84.notes_group('TNT', ('2024-07-17', 3, 'L'), 'L') == 'TNT-label'
+    # the reader refuses any recording outside the 19 (without touching a drive)
+    YRN = pytest.importorskip('yang_response_normalization')
+    with pytest.raises(ValueError):
+        YRN.read_suite2p('TNT', '20240101_1FLfun1', Path('/nonexistent'))
+    with pytest.raises(ValueError):
+        E84.load_cache('TNT3c', '20240717_2FLfun1')
