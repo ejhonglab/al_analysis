@@ -10,7 +10,9 @@ literals. KC distances are one minus the cosine similarity of per-recording tria
 vectors, averaged over recordings (the report's matrices); ORN distances are
 `kc_remapping_harness.orn16_consensus_pairs()` (1 - Pearson r, 36 glomeruli, olfdb). Entries named
 `noise_*` are the KC data's side of the realism bands (Tom, 2026-11-10 16:10): each KC's responses in units
-of its own baseline noise, a response above `noise_threshold` (`noise_unit_criterion`).
+of its own baseline noise, a response above `noise_threshold` (`noise_unit_criterion`). Entries named `repeat_*` and
+`noise_free_*` (not band entries) are the flies' variability across the three repeats (E81_repeat_structure.py): the
+same-repeat gap, and distances and the APL effect from products of different repeats.
 Usage: ./venv/bin/python data_targets.py [--add-new]
 (--add-new: compute every entry but write only those not yet in the registry, keeping the existing entries as
 they are, and list any existing entry whose recomputed value or interval differs)
@@ -618,6 +620,12 @@ def build() -> dict:
     for name, value, definition, ci in e76_entries():
         add(name, value, definition, 'E76_data_side_target.registry_entries (effect_resamples: 1000 resamples of recordings, '
             'seed 0, as apl_effect_*)', ['noise_trialmeans', 'noise_trials', 'kc_trialmeans'], ci=ci)
+    # the flies' variability across the three repeats (E81): the same-repeat gap, the run-down, and the noise-free distances
+    # and per-pair APL effect from products of different repeats (90 % intervals over 1000 resamples of recordings, seed 0)
+    from E81_repeat_structure import registry_entries as e81_entries
+    for name, value, definition, ci in e81_entries():
+        add(name, value, definition, 'E81_repeat_structure.registry_entries (harness repeat statistics; 1000 resamples of '
+            'recordings, seed 0)', ['kc_trials_ctrl', 'kc_trials_tnt', 'noise_trials'], ci=ci)
     return reg
 
 
