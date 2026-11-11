@@ -33,34 +33,6 @@ directory's notes/ and are linked from here.
   constant; since 2026-11-11 it refuses a fits.csv row with time_stim_end, time_end or apl_taum away from olfsysm's defaults
   rather than rebuilding it at 0.5 s unnoticed (test_e43_timing_refusal.py). E73's part B reads saved counts and trials only.
 
-### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
-- **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds
-  nothing to the dot product between different odors. In the recordings two different odors of the same repeat of the panel are more alike
-  than two odors of different repeats, in all 19 recordings (single-trial cosine distance gap 0.006 to 0.053 in control flies, 0.041 to 0.113
-  with APL output blocked (TNT); a planning subagent's read-only probe, single pass, no intervals), so part of the noise is shared between the
-  odors of a repeat and the correction is biased low: by the probe, mean distances 0.79 / 0.58 (control flies / APL output blocked (TNT))
-  where an estimate from products of different repeats gives about 0.81 / 0.62, the mean APL effect +0.212 where it gives +0.186, and the six
-  pairs with near-identical ORN input 0.30 / 0.12 where it gives about 0.36 / 0.22.
-- **Touches.** results/noise_floor/; the registry's noise-corrected values (the mean distances, the block's +0.072, the effect's +0.212) and
-  the summary rows that quote them; the "corrected for trial-to-trial noise" rows of E43, E48 and E68 and of E76's unit table; the "trial
-  noise removed" column and the "at zero" sentence of E78's entry and report item 78.
-- **Done.** E81 (atlas) estimated the noise-free values with intervals (registry `noise_free_*`; part A4); the summary quotes them beside or in place of
-  the earlier values (template, 2026-11-11 10:57); E76's note carries a dated annotation (10:57).
-- **Done (hal, 2026-11-11).** E78's note gives both estimates (its six-pair table and text); E78's Completed entry and
-  report item 78 carry dated annotations.
-- **Done (E81 parts A and B, atlas, 2026-11-11).** The shared part is confirmed with intervals (E81_repeat_structure.py,
-  results/E81_repeat_structure/): the same-repeat gap is 0.025 (90 % interval over resampled recordings 0.019 to 0.033) in control
-  flies and 0.070 (0.055 to 0.085) with APL output blocked (TNT), positive in all 19 recordings. The noise-free estimate from cosines
-  of different repeats (`kc_remapping_harness.noise_free_pair_distances`; registry `noise_free_*`) gives mean distances 0.811
-  (0.782 to 0.835) / 0.625 (0.569 to 0.677) where the correction in use gives 0.789 / 0.577, a mean APL effect of +0.186 (0.127 to
-  0.244) for +0.212, the six pairs 0.365 / 0.222 for 0.298 / 0.122 and the block 0.067 for 0.072. With APL output blocked (TNT) the
-  estimate from the first against the third repeat is 0.030 (0.019 to 0.040) below that from adjacent repeats (control flies
-  +0.001), so the drift does not cancel completely there. In the models' pipeline trials, whose variability is all shared by the
-  odors of a trial, the correction in use takes the six pairs to about 0 or below it at the matched levels (C2: 0.012 / 0.005; the
-  other archived models -0.65 to +0.10), where the noise-free estimate keeps them near their trial means (C2: 0.213 / 0.145; the
-  others 0.07 to 0.28; saved_trials_structure.csv).
-- **Remains.** Annotation of every quoted noise-corrected value (the list under Touches), or the correction replaced by the
-  noise-free estimate; for E81's write-up.
 
 ### E75's part B named the archive's least-common-error variants wrongly (found 2026-11-10 18:15, viki's planning subagent for E77; checked by viki)
 - **What.** The glomerulus profile of APL inhibition (E75) part B ranks every archived variant by how much of the error common to
@@ -235,6 +207,36 @@ directory's notes/ and are linked from here.
   against their sources); the per-experiment notes keep their hand-typed values.
 
 ## Resolved
+
+### The noise correction of the KC distances assumes noise independent between odors, which the recordings' repeats contradict (found 2026-11-11, atlas's planning subagent, probe)
+- **What.** `noise_floor_trial_distances.py` corrects each recording's odor-odor distances on the assumption that trial-to-trial noise adds
+  nothing to the dot product between different odors. In the recordings two different odors of the same repeat of the panel are more alike
+  than two odors of different repeats, in all 19 recordings (single-trial cosine distance gap 0.006 to 0.053 in control flies, 0.041 to 0.113
+  with APL output blocked (TNT); a planning subagent's read-only probe, single pass, no intervals), so part of the noise is shared between the
+  odors of a repeat and the correction is biased low: by the probe, mean distances 0.79 / 0.58 (control flies / APL output blocked (TNT))
+  where an estimate from products of different repeats gives about 0.81 / 0.62, the mean APL effect +0.212 where it gives +0.186, and the six
+  pairs with near-identical ORN input 0.30 / 0.12 where it gives about 0.36 / 0.22.
+- **Touches.** results/noise_floor/; the registry's noise-corrected values (the mean distances, the block's +0.072, the effect's +0.212) and
+  the summary rows that quote them; the "corrected for trial-to-trial noise" rows of E43, E48 and E68 and of E76's unit table; the "trial
+  noise removed" column and the "at zero" sentence of E78's entry and report item 78.
+- **Done.** E81 (atlas) estimated the noise-free values with intervals (registry `noise_free_*`; part A4); the summary quotes them beside or in place of
+  the earlier values (template, 2026-11-11 10:57); E76's note carries a dated annotation (10:57).
+- **Done (hal, 2026-11-11).** E78's note gives both estimates (its six-pair table and text); E78's Completed entry and
+  report item 78 carry dated annotations.
+- **Done (E81 parts A and B, atlas, 2026-11-11).** The shared part is confirmed with intervals (E81_repeat_structure.py,
+  results/E81_repeat_structure/): the same-repeat gap is 0.025 (90 % interval over resampled recordings 0.019 to 0.033) in control
+  flies and 0.070 (0.055 to 0.085) with APL output blocked (TNT), positive in all 19 recordings. The noise-free estimate from cosines
+  of different repeats (`kc_remapping_harness.noise_free_pair_distances`; registry `noise_free_*`) gives mean distances 0.811
+  (0.782 to 0.835) / 0.625 (0.569 to 0.677) where the correction in use gives 0.789 / 0.577, a mean APL effect of +0.186 (0.127 to
+  0.244) for +0.212, the six pairs 0.365 / 0.222 for 0.298 / 0.122 and the block 0.067 for 0.072. With APL output blocked (TNT) the
+  estimate from the first against the third repeat is 0.030 (0.019 to 0.040) below that from adjacent repeats (control flies
+  +0.001), so the drift does not cancel completely there. In the models' pipeline trials, whose variability is all shared by the
+  odors of a trial, the correction in use takes the six pairs to about 0 or below it at the matched levels (C2: 0.012 / 0.005; the
+  other archived models -0.65 to +0.10), where the noise-free estimate keeps them near their trial means (C2: 0.213 / 0.145; the
+  others 0.07 to 0.28; saved_trials_structure.csv).
+- **Resolved 2026-11-11 11:05 (atlas).** Every output under Touches is annotated: the summary (template, 10:57), E76 (10:57), E65
+  (viki, 11:00), E68 and E78 (hal), E43 and E48 (atlas, 11:04), and results/noise_floor/README.md (11:05). The registry keeps
+  both the earlier values and `noise_free_*`.
 
 ### E78's gate.csv gave C2's readout loss as the start's for the points on P1 and the firing-ceiling fit (found 2026-11-11 02:45, hal's session)
 - **What.** In results/E78_claw_knee/gate.csv (the high per-claw knee without a dead zone, E78), the column `cal_loss_start` held C2's
