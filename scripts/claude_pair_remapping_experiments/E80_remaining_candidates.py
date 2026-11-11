@@ -193,15 +193,64 @@ def type_split(out: Path) -> pd.DataFrame:
     return res
 
 
+def archive_prep(out: Path) -> pd.DataFrame:
+    """Before archive_model_outputs.py: variants.csv with every saved screen point (outputs/E80_remaining_candidates/
+    screen/<tag>_*, tag C2_<point_id> or fit0_<point_id>) and pulse point (outputs/.../pulse/<point_id>_*) and their
+    absolute parameters, and their pair distances (raw spike counts, the harness's primary model RDM) added to
+    model_pair_distances_long.csv, for the archive's params.csv and apl_effect_scores.py."""
+    odir = H.outputs_dir(EXPERIMENT)
+    keep = ['fixed_thr', 'fixed_thr_off', 'wAPLKC_scale', 'wKCAPL_scale', 'wAPLPN_scale', 'wPNAPL_scale', 'wKCKC_scale',
+            'thr_factor', 'apl_factor', 'rate_on', 'rate_off']
+    rows, parts = [], []
+    s = pd.read_csv(out / 'screen.csv').drop_duplicates('point_id', keep='last')
+    for _, r in s.iterrows():
+        for base in ('C2', 'fit0'):
+            tag = f'{base}_{r.point_id}'
+            if (odir / 'screen' / f'{tag}_on_spike_counts.parquet').exists():
+                rows.append(dict(tag=tag, variant=tag, part='B', point=r.point_id, kind=r.get('kind'), handle=r.get('handle'),
+                                 setting=r.get('setting'), value=r.get('value'), base='bouton', k=2.0,
+                                 kc_kc_inh=r.get('wKCKC_scale'), **{c: r[c] for c in keep if c in r.index}))
+                parts.append(('screen', tag))
+    p = pd.read_csv(out / 'pulse.csv')
+    for _, r in p.iterrows():
+        tag = r.point_id
+        rows.append(dict(tag=tag, variant=tag, part='A', point=r.point_id, kind='pulse', setting=r.get('pulse'),
+                         time_stim_end=r.get('time_stim_end'), time_end=r.get('time_end'), base='bouton', k=2.0,
+                         kc_kc_inh=r.get('wKCKC_scale'), **{c: r[c] for c in keep if c in r.index}))
+        parts.append(('pulse', tag))
+    v = pd.DataFrame(rows)
+    v.to_csv(out / 'variants.csv', index=False)
+    lp = out / 'model_pair_distances_long.csv'
+    old = pd.read_csv(lp) if lp.exists() else pd.DataFrame(columns=['tag', 'condition', 'odor_a', 'odor_b', 'distance'])
+    new = []
+    for sub, tag in parts:
+        if tag in set(old.tag):
+            continue
+        d = {}
+        for c in ('on', 'acute_off'):
+            f, g = odir / sub / f'{tag}_{c}_spike_counts.parquet', odir / sub / f'{tag}_{c}_responses.parquet'
+            if not (f.exists() and g.exists()):
+                break
+            d[c] = H.model_rdms(pd.read_parquet(g), pd.read_parquet(f))[H.PRIMARY_MODEL_RDM]
+        if len(d) == 2:
+            new.append(pd.concat({(tag, c): x for c, x in d.items()}, names=['tag', 'condition', 'odor_a', 'odor_b']).rename('distance').reset_index())
+    if new:
+        pd.concat([old] + new, ignore_index=True).to_csv(lp, index=False)
+    print(f'{len(v)} variants; {len(new)} added to model_pair_distances_long.csv', flush=True)
+    return v
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--part', required=True, choices=['D', 'A', 'B', 'C', 'tables'])
+    ap.add_argument('--part', required=True, choices=['D', 'A', 'B', 'C', 'tables', 'archive-prep'])
     args = ap.parse_args()
     out = H.results_dir(EXPERIMENT)
     out.mkdir(parents=True, exist_ok=True)
     if args.part == 'D':
         for f in (amplitude_by_breadth, breadth_weighted, type_split):
             f(out)
+    elif args.part == 'archive-prep':
+        archive_prep(out)
     elif args.part in ('A', 'B', 'C'):
         if args.part == 'A':
             import E80_pulse as Pp
