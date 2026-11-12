@@ -159,8 +159,8 @@ to run anyway. `mb_model.model_provenance()` collects the olfsysm build info, th
 and dirty state (with diff) of `al_analysis` and `hong2p`, the CPU, Python and package
 versions, and content hashes of the model inputs; `fit_and_plot_mb_model` writes it as
 `model_provenance.json` next to each output's parameter files, and the KC-remapping
-experiment scripts include it in their `provenance.json`. The experiment harness
-(`scripts/claude_pair_remapping_experiments`) and `test/generate_reference_outputs_for_repro.py`
+experiment scripts include it in their `provenance.json`. The KC-remapping experiment harness
+(ejhonglab/model_experiment_queue since 2026-11-11) and `test/generate_reference_outputs_for_repro.py`
 always require a clean build (the environment variable is ignored there). The repro tests
 in `test/test_mb_model.py` do not compare any of this: they check that behavior did not
 change across versions.

@@ -19540,7 +19540,7 @@ def olfsysm_checkout_path() -> Path:
     """Returns the olfsysm checkout the installed extension was built from.
 
     E.g. ~/src/olfsysm on Tom's hosts and ~/src/kc_queue/olfsysm on lab members' machines (see
-    scripts/claude_pair_remapping_experiments/join_queue.sh); the extension's own directory if
+    join_queue.sh in ejhonglab/model_experiment_queue); the extension's own directory if
     it is not an editable install.
     """
     return _olfsysm_install_location()[0]

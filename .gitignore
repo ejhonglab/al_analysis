@@ -53,6 +53,6 @@ chemfig/
 *.old
 .tox/
 
-# Claude Code per-machine state (the experiments folder's .claude/settings.json is shared)
+# Claude Code per-machine state (a .claude/settings.json in a checkout is shared)
 **/.claude/scheduled_tasks.lock
 **/.claude/settings.local.json
