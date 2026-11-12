@@ -26,7 +26,8 @@ from hong2p.roi import extract_traces_bool_masks, ijroi_masks
 from hong2p.types import Pathlike
 from drosolf import orns
 
-from al_analysis.al_util import warn, plot_all_roi_mean_responses
+from hong2p.util import warn
+from al_analysis.al_util import plot_all_roi_mean_responses
 from al_analysis.al_analysis import (ij_roi_responses_cache, dropna,
     mocorr_concat_tiff_basename
 )

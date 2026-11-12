@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# TODO rename this script csv_cli.py or something? (now that read_csv is in al_util,
+# TODO rename this script csv_cli.py or something? (now that read_csv is in hong2p.io,
 # which used to be main purpose of this script)
 
 import argparse
@@ -16,9 +16,12 @@ from hong2p.roi import certain_roi_indices
 from hong2p.types import Pathlike
 from hong2p.pandas import pd_allclose
 
-from al_analysis.al_util import (format_mtime, warn, sort_odors, fly_cols, flyroi_cols,
-    read_csv, roi_plot_kws, roimean_plot_kws, plot_all_roi_mean_responses,
-    plot_n_per_odor_and_glom, get_gsheet_metadata
+# (formerly in al_util, which still re-exports them)
+from hong2p.io import read_csv
+from hong2p.olf import sort_odors_by_panel as sort_odors
+from hong2p.util import format_mtime, warn, fly_cols, flyroi_cols
+from al_analysis.al_util import (roi_plot_kws, roimean_plot_kws,
+    plot_all_roi_mean_responses, plot_n_per_odor_and_glom, get_gsheet_metadata
 )
 
 

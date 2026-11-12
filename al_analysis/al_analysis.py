@@ -84,17 +84,25 @@ from natmix import write_corr_dataarray as _write_corr_dataarray
 # circular imports
 from al_analysis.logging import init_logger
 #
-from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
-    panel2name_order, diag_panel_str, warn, should_ignore_existing,
-    ignore_existing_options, data_root, produces_output, to_csv, to_pickle, read_pickle,
-    plot_fmt, makedirs, cmap, diverging_cmap, diverging_cmap_kwargs, bootstrap_seed,
-    cluster_rois, plot_corr, plot_responses, mean_of_fly_corrs, print_curr_mem_usage,
-    fly_cols, flyroi_cols, plot_all_roi_mean_responses, plot_n_per_odor_and_glom,
-    get_gsheet_metadata, zscore_traces_per_recording, sort_concs, sort_fly_roi_cols,
-    fly_roi_id, response_stat_fn, roimean_plot_kws, roi_plot_kws,
-    count_n_per_odor_and_glom, format_panel, roi_label, mean_response_desc, to_json,
-    read_json, to_parquet, response_calc_params_json_name,
+# (formerly in al_util, which still re-exports them)
+from hong2p import io as hong2p_io
+from hong2p.io import (savefig, should_ignore_existing, ignore_existing_options,
+    produces_output, to_csv, to_pickle, read_pickle, plot_fmt, makedirs, to_json,
+    to_parquet, response_calc_params_json_name,
     add_check_outputs_unchanged_CLI_flag_and_parse_args
+)
+from hong2p.olf import abbrev_hallem_odor_index, panel2name_order, diag_panel_str
+from hong2p.olf import sort_odors_by_panel as sort_odors
+from hong2p.util import (warn, bootstrap_seed, mean_of_fly_corrs, print_curr_mem_usage,
+    fly_cols, flyroi_cols, read_json
+)
+from hong2p.viz import (diverging_cmap, diverging_cmap_kwargs, cluster_rois, plot_corr,
+    plot_responses
+)
+from al_analysis.al_util import (data_root, cmap, plot_all_roi_mean_responses,
+    plot_n_per_odor_and_glom, get_gsheet_metadata, zscore_traces_per_recording,
+    sort_concs, sort_fly_roi_cols, fly_roi_id, response_stat_fn, roimean_plot_kws,
+    roi_plot_kws, count_n_per_odor_and_glom, format_panel, roi_label, mean_response_desc
 )
 from al_analysis import al_util
 from al_analysis.mb_model import model_mb_responses
@@ -1841,9 +1849,9 @@ def delete_if_empty(d):
 
 
 def delete_empty_dirs():
-    """Deletes empty directories in `al_util._dirs_to_delete_if_empty`
+    """Deletes empty directories in `hong2p.io._dirs_to_delete_if_empty`
     """
-    for d in set(al_util._dirs_to_delete_if_empty):
+    for d in set(hong2p_io._dirs_to_delete_if_empty):
         delete_if_empty(d)
 
 
@@ -1905,7 +1913,7 @@ def cleanup_created_dirs_and_links():
     if links_to_input_dirs:
         # Also want to delete directories that now *just* contain a single link
         # ('thorimage') to raw data directory.
-        for d in al_util._dirs_to_delete_if_empty:
+        for d in hong2p_io._dirs_to_delete_if_empty:
             # May have already been deleted
             if not exists(d):
                 continue
@@ -6326,7 +6334,7 @@ def write_trial_and_frame_json(thorimage_dir, thorsync_dir, err=False
     ) -> Optional[Tuple[Path, Dict[str, Any], list]]:
     """Writes JSON with frames and odors of each trial, to recording's analysis dir.
 
-    (e.g. for use in ImageJ.) Will recompute if al_util.ignore_existing explicitly
+    (e.g. for use in ImageJ.) Will recompute if hong2p.io.ignore_existing explicitly
     included 'json'. Skips recordings that previously failed frame<->odor assignment,
     unless frame assignments were manually copied into the analysis directory.
 
@@ -7986,7 +7994,7 @@ def pair_savefig(fig_or_sns_obj, fname_prefix, names):
     # TODO check consistent w/ other place that generates pair dirs now
     # (in process_recording) (or delete all this old code...)
     import ipdb; ipdb.set_trace()
-    if al_util.save_figs:
+    if hong2p_io.save_figs:
         savefig(fig_or_sns_obj, pair_dir, fname_prefix)
 
 
@@ -10099,7 +10107,7 @@ def main():
     force_across_fly = args.force_across_fly
 
     parallel = args.parallel
-    al_util.ignore_existing = args.ignore_existing
+    hong2p_io.ignore_existing = args.ignore_existing
     steps_to_skip = args.skip
     first_model_kws_only = args.first_model_only
     retry_previously_failed = args.retry_failed
@@ -10113,29 +10121,28 @@ def main():
     start_date = args.start_date
     end_date = args.end_date
 
-    # TODO work? trying to refactor stuff shared between mb_model and al_analysis to
-    # new al_util.
-    al_util.exit_after_saving_fig_containing = args.exit_after_saving_fig_containing
+    # (read by hong2p.io.savefig)
+    hong2p_io.exit_after_saving_fig_containing = args.exit_after_saving_fig_containing
 
     verbose = args.verbose
 
-    # used by some stuff defined in al_util, as well as by mb_model
-    al_util.verbose = verbose
+    # used by hong2p.io (e.g. savefig printing paths), al_util, and mb_model
+    hong2p_io.verbose = verbose
 
     print_skipped = verbose
 
     # TODO share --ignore-existing and --skip parsing (prob refactoring into parser arg
     # to add_argument calls?) (make sure to handle no-string-passed --skip and bool
     # --ignore-existing)
-    if type(al_util.ignore_existing) is not bool:
-        al_util.ignore_existing = {
-            x for x in al_util.ignore_existing.split(',') if len(x) > 0
+    if type(hong2p_io.ignore_existing) is not bool:
+        hong2p_io.ignore_existing = {
+            x for x in hong2p_io.ignore_existing.split(',') if len(x) > 0
         }
-        for x in al_util.ignore_existing:
+        for x in hong2p_io.ignore_existing:
             if x not in ignore_existing_options:
                 raise ValueError('-i/--ignore-existing must either be given no argument'
                     ', or a comma separated list of elements from '
-                    f"{ignore_existing_options}. got '{al_util.ignore_existing}'."
+                    f"{ignore_existing_options}. got '{hong2p_io.ignore_existing}'."
                 )
 
     assert type(steps_to_skip) is str
@@ -10862,7 +10869,7 @@ def main():
     # -C? could also use for saving mean_est_spike_deltas.csv in modelling code
     #
     # hack to get -C to to also ignore stuff saved by save_method_csvs
-    al_util._consider_as_main.append('save_method_csvs')
+    hong2p_io._consider_as_main.append('save_method_csvs')
 
     def save_method_csvs(df, suffix='', *, by_fly_version=False):
         """Saves CSVs of recording metadata (acquisition params, etc) under output_root.

@@ -119,21 +119,29 @@ import faulthandler, sys
 faulthandler.enable(file=sys.stderr, all_threads=True)
 #
 
-from al_analysis.al_util import (savefig, abbrev_hallem_odor_index, sort_odors,
-    panel2name_order, diag_panel_str, warn, should_ignore_existing, to_csv, to_pickle,
-    read_pickle, makedirs, corr_triangular, invert_corr_triangular, n_choose_2,
-    diverging_cmap, diverging_cmap_kwargs, bootstrap_seed, mean_of_fly_corrs, plot_corr,
-    plot_responses_and_corr, rotate_xticklabels, cluster_rois, odor_is_megamat,
-    megamat_odor_names, remy_data_dir, remy_binary_response_dir, remy_megamat_sparsity,
-    remy_date_col, remy_fly_cols, remy_fly_id, remy_fly_binary_response_fname,
-    load_remy_fly_binary_responses, load_remy_megamat_kc_binary_responses,
-    MultipleSavesPerRunException, print_curr_mem_usage, data_root, fly_cols,
-    flyroi_cols, read_parquet, to_parquet, to_json, read_json, written_since_proc_start,
-    format_mtime, response_calc_params_json_name, sent_to_remy, produces_output,
-    in_pytest, _have_fly_cols, paper_repro_kws, hemibrain_paper_repro_kws,
-    stack_keep_na, stack_drop_na
+# (formerly in al_util, which still re-exports them)
+from hong2p import io as hong2p_io
+from hong2p.io import (savefig, should_ignore_existing, to_csv, to_pickle, read_pickle,
+    makedirs, MultipleSavesPerRunException, read_parquet, to_parquet, to_json,
+    written_since_proc_start, response_calc_params_json_name, produces_output
 )
-from al_analysis import al_util
+from hong2p.olf import abbrev_hallem_odor_index, panel2name_order, diag_panel_str
+from hong2p.olf import sort_odors_by_panel as sort_odors
+from hong2p.util import (warn, corr_triangular, invert_corr_triangular, n_choose_2,
+    bootstrap_seed, mean_of_fly_corrs, print_curr_mem_usage, fly_cols, flyroi_cols,
+    read_json, format_mtime, in_pytest
+)
+from hong2p.pandas import stack_keep_na, stack_drop_na
+from hong2p.viz import (diverging_cmap, diverging_cmap_kwargs, plot_corr,
+    plot_responses_and_corr, rotate_xticklabels, cluster_rois
+)
+# only used by this module (to move with it, out of al_analysis)
+from al_analysis.al_util import (odor_is_megamat, megamat_odor_names, remy_data_dir,
+    remy_binary_response_dir, remy_megamat_sparsity, remy_date_col, remy_fly_cols,
+    remy_fly_id, remy_fly_binary_response_fname, load_remy_fly_binary_responses,
+    load_remy_megamat_kc_binary_responses, data_root, sent_to_remy, _have_fly_cols,
+    paper_repro_kws, hemibrain_paper_repro_kws
+)
 
 
 # removed in pandas 3 (where Copy-on-Write is always enabled)
@@ -469,7 +477,7 @@ def dict_seq_product(*dict_seqs: List[dict], allow_key_overlap: bool = False,
 
 @produces_output
 def save_dataarray(*args, **kwargs) -> None:
-    """`hong2p.xarray.save_dataarray`, wrapped w/ `al_util.produces_output`.
+    """`hong2p.xarray.save_dataarray`, wrapped w/ `hong2p.io.produces_output`.
     """
     _save_dataarray(*args, **kwargs)
 
@@ -12393,7 +12401,7 @@ def load_and_plot_dynamics_cli() -> None:
         assert skip_first_n > 0
 
     # so we see prints telling us when and where plots are being saved
-    al_util.verbose = True
+    hong2p_io.verbose = True
 
     if not recursive:
         var2range = load_and_plot_dynamics(model_dir)
@@ -13180,7 +13188,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
             `_multiresponder_mask`, or masks saved by natmix_data analysis, if not
             passed) are multiplied by this factor (see `boost_wKCAPL`)
 
-        verbose: defaults to `al_util.verbose`
+        verbose: defaults to `hong2p.io.verbose`
 
         silent: if True, suppresses verbose and olfsysm log output
 
@@ -13296,7 +13304,7 @@ def fit_mb_model(orn_deltas: pd.DataFrame, *,
         print_olfsysm_log = False
 
     if verbose is None:
-        verbose = al_util.verbose
+        verbose = hong2p_io.verbose
 
     if prat_boutons:
         # bouton length wPNAPL and wAPLPN. currently only tested in this case, and some
@@ -24070,7 +24078,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     # shared across all flies, whether recalculated within one panel or not)
     flymins = fly_quantiles[0.0].rename('min')
     flymaxs = fly_quantiles[1.0].rename('max')
-    if al_util.verbose:
+    if hong2p_io.verbose:
         before_scaling = addlevel(pd.concat([flymins, flymaxs], axis='columns'),
             '', 'before', axis='columns'
         )
@@ -24197,7 +24205,7 @@ def scale_dff_to_est_spike_deltas_using_hallem(plot_dir: Path, fly_df: pd.DataFr
     )
     #
 
-    if al_util.verbose and scaling_method is not None:
+    if hong2p_io.verbose and scaling_method is not None:
         flymins = fly_mean_df.groupby('fly_id')[col_to_fit].min().rename('min')
         flymaxs = fly_mean_df.groupby('fly_id')[col_to_fit].max().rename('max')
         after_scaling = addlevel(pd.concat([flymins, flymaxs], axis='columns'),
@@ -25385,7 +25393,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
 
         assert output_dir.is_dir()
 
-        if al_util.verbose:
+        if hong2p_io.verbose:
             print(f'copying model inputs to {output_dir.name}:')
 
         # TODO refactor to share date_format= part w/ consensus_df saving i copied this
@@ -25429,7 +25437,7 @@ def model_mb_responses(certain_df: pd.DataFrame, plot_dir: Path, *,
                 'on symlinks'
             )
             dst = (output_dir / to_copy.name).resolve()
-            if al_util.verbose:
+            if hong2p_io.verbose:
                 # works in all calls (both w/ plot_root = mb_modeling or model output
                 # dir), where inputs are not absolute paths. presumably should also work
                 # if any were absolute paths
@@ -27326,7 +27334,7 @@ def load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool 
 
     Args:
         drop_nonmegamat: if True, drops non-megamat odors (warning if
-            `al_util.verbose`)
+            `hong2p.io.verbose`)
 
         drop_pfo: if True, drops pfo. Only relevant if `drop_nonmegamat=False`.
 
@@ -27355,7 +27363,7 @@ def load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool 
     #     peak_idx          (trials, cells) int64 ...
     olddata_response_calc_to_use = 'peak_amp'
 
-    verbose = al_util.verbose
+    verbose = hong2p_io.verbose
     if verbose:
         print()
         print('loading Remy megamat KC responses to compute (odor X odor) corrs:')
@@ -27622,7 +27630,7 @@ def load_remy_megamat_kc_responses(drop_nonmegamat: bool = True, drop_pfo: bool 
     odor_strs = [olf.format_odor(x, cast_int_concs=True) for x in odors]
     mean_responses.columns = odor_strs
 
-    # so al_util.mean_of_fly_corrs works
+    # so util.mean_of_fly_corrs works
     mean_responses.columns.name = 'odor1'
 
     # when also loading old (prior to final 4 flies) megamat data:
@@ -27683,7 +27691,7 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool 
         **kwargs
     )
 
-    # TODO move some functionality like this into al_util.mean_of_fly_corrs (to average
+    # TODO move some functionality like this into util.mean_of_fly_corrs (to average
     # within fly across recordings first)?
     # TODO factor out the def of these cols? already have somewhere?
     recording_corrs = mean_responses.groupby(level=['datefly', 'thorimage'], sort=False
@@ -27797,7 +27805,7 @@ def _remy_megamat_flymean_kc_corrs(ordered_pairs=None, *, drop_nonmegamat: bool 
     # TODO check this works if there are multiple thorimage level values (i.e.
     # recordings) for one pair (e.g. 1-6ol, 2-but) for any fly. should average the corrs
     # first, then compute average across flies.
-    #mean_corr = al_util.mean_of_fly_corrs(mean_responses.T, id_cols=['datefly'])
+    #mean_corr = util.mean_of_fly_corrs(mean_responses.T, id_cols=['datefly'])
 
     return fly_corrs
 
@@ -28193,7 +28201,7 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
     assert data_folder.is_dir(), f'{data_folder=}'
 
     csv_path = data_folder.joinpath(csv_name)
-    if al_util.verbose:
+    if hong2p_io.verbose:
         print(f'loading Remy correlations for 2E from {csv_path}')
 
     df_obs = pd.read_csv(csv_path)
@@ -28465,7 +28473,7 @@ def load_remy_2e_corrs(plot_dir: Optional[Path] = None, *,
         # TODO delete? already relaxed from == to >=
         assert len(corrs.columns) >= n_megamat_only_pairs
 
-        # TODO restore debug=False? only =True if al_util.verbose?
+        # TODO restore debug=False? only =True if hong2p.io.verbose?
         debug = True
 
         if debug:
@@ -29230,7 +29238,7 @@ def count_flies_and_rois(df: pd.DataFrame, *, verbose: bool = True
     ) -> Tuple[Optional[int], int]:
     """Returns n_flies, n_rois. n_flies can be None, e.g. with index model input.
 
-    `al_util.flyroi_cols` all expected to be in column index level names.
+    `hong2p.util.flyroi_cols` all expected to be in column index level names.
     """
     roi_col = get_roi_level(df.columns)
     assert roi_col in df.columns.names
@@ -32826,7 +32834,7 @@ def main():
     assert orn_deltas.index.names == [glomerulus_col]
 
     # currently only way to enable olfsysm log prints
-    al_util.verbose = True
+    hong2p_io.verbose = True
 
     plot_root = Path('model_mb_example').resolve()
 

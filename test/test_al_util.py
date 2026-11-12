@@ -488,3 +488,122 @@ def test_sort_fly_roi_cols():
         ('2023-01-02', 1, 'DM1'),
     ]
 
+
+
+# names moved from al_util to hong2p (2026-11), by the hong2p module al_util re-exports
+# them from
+_moved_to_hong2p: Dict[str, List[str]] = {
+    'hong2p.io': ['add_check_outputs_unchanged_CLI_flag_and_parse_args', 'CodeContext',
+        'produces_output', 'MultipleSavesPerRunException',
+        '_output_change_prompt_or_err', 'caller_info', 'to_csv', 'read_parquet',
+        'to_parquet', 'to_pickle', 'read_pickle', 'to_json', 'np_save',
+        'drop_old_odor_index_levels', 'read_csv', 'text_diff',
+        '_check_output_would_not_change', 'should_ignore_existing', 'makedirs',
+        'savefig', 'curr_proc_start_time', 'written_since_proc_start', 'read_json'
+    ],
+    'hong2p.util': ['read_json', 'bootstrap_seed', 'fly_cols', 'flyroi_cols',
+        'formatwarning_msg_only', 'in_pytest', 'is_pytest_capturing_stderr', 'warn',
+        'format_mtime', 'print_curr_mem_usage', 'n_choose_2', 'n_multichoose_k',
+        'corr_triangular', 'invert_corr_triangular', 'mean_of_fly_corrs'
+    ],
+    'hong2p.pandas': ['stack_keep_na', 'stack_drop_na'],
+    'hong2p.olf': ['diag_panel_str', 'panel2name_order', 'panel_order',
+        'abbrev_hallem_odor_index'
+    ],
+    'hong2p.viz': ['diverging_cmap', 'light_gray', 'diverging_cmap_tophalf',
+        'diverging_cmap_kwargs', 'plot_corr', '_plot_responses_helper', 'plot_responses',
+        'plot_responses_err', 'plot_responses_and_corr', 'cluster_rois',
+        'rotate_xticklabels'
+    ],
+}
+
+@pytest.mark.parametrize('module_name', sorted(_moved_to_hong2p))
+def test_moved_names_reexported(module_name):
+    """Tests al_util re-exports the names moved to hong2p (the same objects).
+    """
+    import importlib
+    module = importlib.import_module(module_name)
+    for name in _moved_to_hong2p[module_name]:
+        assert getattr(al_util, name) is getattr(module, name), name
+
+    if module_name == 'hong2p.olf':
+        assert al_util.sort_odors is module.sort_odors_by_panel
+
+
+@pytest.mark.parametrize('name', sorted(al_util._forwarded_to_hong2p_io))
+def test_settings_forwarded_to_hong2p_io(name, monkeypatch):
+    """Tests reading, assigning and deleting al_util's forwarded names reach hong2p.io.
+    """
+    import hong2p.io as hong2p_io
+
+    assert name not in vars(al_util)
+    had = hasattr(hong2p_io, name)
+    assert hasattr(al_util, name) == had
+    if had:
+        assert getattr(al_util, name) is getattr(hong2p_io, name)
+
+    value = object()
+    # (raising=False for check_nonmain_outputs_unchanged, which is only defined once
+    # add_check_outputs_unchanged_CLI_flag_and_parse_args has run)
+    monkeypatch.setattr(al_util, name, value, raising=False)
+    assert getattr(hong2p_io, name) is value
+    assert getattr(al_util, name) is value
+    assert name not in vars(al_util)
+
+    other = object()
+    setattr(hong2p_io, name, other)
+    assert getattr(al_util, name) is other
+
+    # restores (or deletes, if it was not defined) through al_util
+    monkeypatch.undo()
+    assert hasattr(hong2p_io, name) == had
+    assert name in dir(al_util)
+
+
+def test_setting_assignment_reaches_hong2p_io(tmp_path):
+    """Tests `al_util.<setting> = ...` (as in scripts) changes hong2p.io's behavior.
+    """
+    import hong2p.io as hong2p_io
+
+    orig_verbose = hong2p_io.verbose
+    orig_save_figs = hong2p_io.save_figs
+    try:
+        al_util.verbose = not orig_verbose
+        assert hong2p_io.verbose is (not orig_verbose)
+        from al_analysis.al_util import verbose
+        assert verbose is (not orig_verbose)
+
+        al_util.save_figs = False
+        assert hong2p_io.save_figs is False
+        fig, ax = plt.subplots()
+        path = al_util.savefig(fig, tmp_path, 'not_saved', fmt='png')
+        assert not path.exists()
+    finally:
+        hong2p_io.verbose = orig_verbose
+        hong2p_io.save_figs = orig_save_figs
+
+    assert al_util.verbose is orig_verbose
+    assert al_util.save_figs is orig_save_figs
+
+
+def test_panel_orders_match_natmix():
+    """Tests hong2p.olf's copies of natmix's panel orders still match natmix.
+
+    (al_util used to build its panel orders from natmix's, which hong2p can not import)
+    """
+    import natmix
+    from hong2p import olf
+
+    for panel in natmix.panel_order:
+        assert olf.panel2name_order[panel] == natmix.panel2name_order[panel], panel
+
+    assert [p for p in olf.panel_order if p in natmix.panel_order] == list(
+        natmix.panel_order
+    )
+    # as al_util had them before the move
+    assert olf.panel_order == ['glomeruli_diagnostics', 'megamat', 'kiwi', 'control',
+        'validation2'
+    ]
+    assert list(olf.panel2name_order) == ['kiwi', 'control', 'glomeruli_diagnostics',
+        'megamat', 'validation2'
+    ]

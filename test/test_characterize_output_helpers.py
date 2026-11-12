@@ -1,10 +1,11 @@
-"""Characterization tests of the file-output helpers (now in `al_analysis.al_util`).
+"""Characterization tests of the file-output helpers (now in `hong2p.io`).
 
 These helpers (`produces_output` and the functions it wraps, `savefig`, `makedirs`,
-`should_ignore_existing`, `written_since_proc_start`, the -c/-C/-P CLI flags) are planned
-to move to hong2p, with `al_util` re-exporting them. All tests here go through
-`out` (the module the helpers live in), so after the move they should pass unchanged
-against hong2p's copy by changing only the `out` import below.
+`should_ignore_existing`, `written_since_proc_start`, the -c/-C/-P CLI flags) moved from
+`al_analysis.al_util` to `hong2p.io`, and `al_util` re-exports them (forwarding its
+settings, e.g. `al_util.check_outputs_unchanged`, to hong2p.io). All tests here go
+through `out`, which is `al_util`, so they test that re-export path. hong2p has a copy of
+these tests (its `test/test_io.py`), with `out` being `hong2p.io`.
 
 Complements `test_al_util.py` (`test_produces_output`, `test_savefig`), which checks the
 recorded code context, `MultipleSavesPerRunException` and the RuntimeError on changed
@@ -26,8 +27,8 @@ import pytest
 import matplotlib
 import matplotlib.pyplot as plt
 
-# the module holding the output helpers. after the move to hong2p, change this import
-# (and nothing else) to test hong2p's copy.
+# the module the output helpers are used through (hong2p's copy of these tests uses
+# `hong2p.io` here)
 from al_analysis import al_util as out
 
 from .characterize import check_frozen
@@ -409,9 +410,11 @@ def test_check_outputs_unchanged_cli_flag(monkeypatch, argv, nonmain_option, exp
     assert args.check_outputs_unchanged == (expected[0] is True)
     assert args.other == ('--other' in argv)
     if nonmain_option:
-        # (only defined once the flags have been added. via vars, so the import surface
-        # scan does not list it as a module attribute)
-        assert vars(out)['check_nonmain_outputs_unchanged'] == (expected[0] == 'nonmain')
+        # (only defined once the flags have been added. name in a variable, so the import
+        # surface scan does not list it as a module attribute. not via `vars(out)`, which
+        # does not include the settings al_util forwards to hong2p.io)
+        name = 'check_nonmain_outputs_unchanged'
+        assert getattr(out, name) == (expected[0] == 'nonmain')
         assert args.check_nonmain_outputs_unchanged == (expected[0] == 'nonmain')
     else:
         assert not hasattr(args, 'check_nonmain_outputs_unchanged')
