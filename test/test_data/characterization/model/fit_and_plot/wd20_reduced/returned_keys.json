@@ -1,0 +1,20 @@
+[
+ "apltune_subsample",
+ "binary_search_on_overshoot",
+ "fixed_thr",
+ "linear_lr_falloff",
+ "max_iters",
+ "megamat_sparsity",
+ "responses_to",
+ "scale_pre_tuning",
+ "sp_acc",
+ "sp_lr_coeff",
+ "sp_lr_coeff_to_tune_in_one_iter",
+ "sparsity",
+ "tune_from",
+ "tuning_iters",
+ "used_model_cache",
+ "wAPLKC",
+ "wKCAPL",
+ "weight_divisor"
+]

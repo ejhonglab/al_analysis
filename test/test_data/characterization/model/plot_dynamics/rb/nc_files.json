@@ -1,0 +1,12 @@
+[
+ "Is_from_kcs.nc",
+ "Is_from_pns.nc",
+ "Is_sims.nc",
+ "bouton_sims.nc",
+ "claw_sims.nc",
+ "inh_sims.nc",
+ "orn_sims.nc",
+ "pn_sims.nc",
+ "spike_recordings.nc",
+ "vm_sims.nc"
+]

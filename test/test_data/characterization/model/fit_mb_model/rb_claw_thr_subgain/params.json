@@ -1,0 +1,18 @@
+{
+ "apltune_subsample": 1,
+ "binary_search_on_overshoot": true,
+ "claw_thr": 70.0,
+ "claw_thr_subgain": 0.5,
+ "fixed_thr": 166.53231884269184,
+ "linear_lr_falloff": true,
+ "max_iters": 100,
+ "scale_pre_tuning": false,
+ "sp_acc": 0.1,
+ "sp_lr_coeff": 10.0,
+ "sp_lr_coeff_to_tune_in_one_iter": 5.64057929801755,
+ "tuning_iters": 14,
+ "wAPLKC_scale": 0.35942070198245035,
+ "wAPLPN_scale": 0.35942070198245035,
+ "wKCAPL_scale": 0.000992874867354835,
+ "wPNAPL_scale": 0.003071971811815812
+}

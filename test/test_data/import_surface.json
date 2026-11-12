@@ -1,0 +1,1153 @@
+{
+ "assigned": {
+  "al_analysis.al_analysis": {
+   "analysis_intermediates_root": [
+    "al_analysis/test"
+   ],
+   "do_convert_raw_to_tiff": [
+    "al_analysis/test"
+   ],
+   "do_register_all_fly_recordings_together": [
+    "al_analysis/test"
+   ],
+   "get_gsheet_metadata": [
+    "al_analysis/test"
+   ],
+   "load_olf_input_yaml": [
+    "al_analysis/test"
+   ],
+   "rois2best_planes_only": [
+    "al_analysis/test"
+   ]
+  },
+  "al_analysis.al_util": {
+   "_consider_as_main": [
+    "al_analysis/test"
+   ],
+   "_dirs_to_delete_if_empty": [
+    "al_analysis/test"
+   ],
+   "check_outputs_unchanged": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "exit_after_saving_fig_containing": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "get_gsheet_metadata": [
+    "al_analysis/test"
+   ],
+   "ignore_existing": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "plot_fmt": [
+    "al_analysis/test"
+   ],
+   "prompt_if_changed": [
+    "al_analysis/test"
+   ],
+   "save_figs": [
+    "al_analysis/test"
+   ],
+   "verbose": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ]
+  },
+  "al_analysis.mb_model": {
+   "STRICT_CLEAN_OLFSYSM": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "fit_mb_model": [
+    "model_experiment_queue"
+   ],
+   "make_fixed_param_kc_simulator": [
+    "al_analysis/test"
+   ],
+   "olfsysm_clean_problems": [
+    "al_analysis/test"
+   ],
+   "optimize_mb_model_params": [
+    "model_experiment_queue"
+   ],
+   "osm": [
+    "model_experiment_queue"
+   ]
+  }
+ },
+ "modules": {
+  "al_analysis.al_analysis": {
+   "analysis2thorimage_dir": [
+    "al_analysis/package"
+   ],
+   "analysis_intermediates_root": [
+    "al_analysis/test"
+   ],
+   "assign_frames_to_odor_presentations": [
+    "al_analysis/package"
+   ],
+   "compute_trial_stats": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "connectome_wPNKC": [
+    "al_analysis/scripts"
+   ],
+   "delta_f_over_f": [
+    "al_analysis/test"
+   ],
+   "diverging_cmap": [
+    "al_analysis/top-level"
+   ],
+   "do_convert_raw_to_tiff": [
+    "al_analysis/test"
+   ],
+   "do_register_all_fly_recordings_together": [
+    "al_analysis/test"
+   ],
+   "dropna": [
+    "al_analysis/package"
+   ],
+   "fill_to_hemibrain": [
+    "al_analysis/scripts"
+   ],
+   "get_analysis_dir": [
+    "al_analysis/package"
+   ],
+   "get_gsheet_metadata": [
+    "al_analysis/test"
+   ],
+   "get_panel": [
+    "al_analysis/package"
+   ],
+   "ij_roi_responses_cache": [
+    "al_analysis/package"
+   ],
+   "is_ijroi_named": [
+    "al_analysis/package"
+   ],
+   "is_pairgrid": [
+    "al_analysis/package"
+   ],
+   "load_movie": [
+    "al_analysis/package"
+   ],
+   "load_olf_input_yaml": [
+    "al_analysis/test"
+   ],
+   "main": [
+    "al_analysis/test"
+   ],
+   "mocorr_concat_tiff_basename": [
+    "al_analysis/package"
+   ],
+   "paired_thor_dirs": [
+    "al_analysis/package"
+   ],
+   "panel2name_order": [
+    "al_analysis/top-level"
+   ],
+   "plot_corr": [
+    "al_analysis/top-level"
+   ],
+   "process_sam_glomeruli_names": [
+    "al_analysis/scripts"
+   ],
+   "rois2best_planes_only": [
+    "al_analysis/test"
+   ],
+   "setnull_nonfinal_panel_odors": [
+    "al_analysis/test"
+   ],
+   "sort_odors": [
+    "al_analysis/package"
+   ],
+   "trial_response_traces": [
+    "al_analysis/test"
+   ]
+  },
+  "al_analysis.al_util": {
+   "MultipleSavesPerRunException": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "ParamDict": [
+    "al_analysis/scripts"
+   ],
+   "_all_seen_inputs": [
+    "al_analysis/test"
+   ],
+   "_consider_as_main": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "_dirs_to_delete_if_empty": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "_fn_name2seen_inputs": [
+    "al_analysis/test"
+   ],
+   "_fn_name2wrapped_fn": [
+    "al_analysis/test"
+   ],
+   "_have_fly_cols": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "_saved_path2last_save_code_context": [
+    "al_analysis/test"
+   ],
+   "_savefig_seen_paths": [
+    "al_analysis/test"
+   ],
+   "abbrev_hallem_odor_index": [
+    "al_analysis/package"
+   ],
+   "add_check_outputs_unchanged_CLI_flag_and_parse_args": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "add_legends_and_colorbars": [
+    "al_analysis/scripts"
+   ],
+   "bootstrap_seed": [
+    "al_analysis/package"
+   ],
+   "check_outputs_unchanged": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "cluster_rois": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "cmap": [
+    "al_analysis/package"
+   ],
+   "corr_triangular": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "count_n_per_odor_and_glom": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "curr_proc_start_time": [
+    "al_analysis/test"
+   ],
+   "data_root": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "diag_panel_str": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "diverging_cmap": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "diverging_cmap_kwargs": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "diverging_cmap_tophalf": [
+    "al_analysis/scripts"
+   ],
+   "exit_after_saving_fig_containing": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "fly_cols": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "fly_roi_id": [
+    "al_analysis/package"
+   ],
+   "flyroi_cols": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "format_mtime": [
+    "al_analysis/package"
+   ],
+   "format_panel": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "get_gsheet_metadata": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "hemibrain_paper_repro_kws": [
+    "al_analysis/package"
+   ],
+   "ignore_existing": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "ignore_existing_options": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "ignore_if_explicitly_requested": [
+    "al_analysis/test"
+   ],
+   "in_pytest": [
+    "al_analysis/package"
+   ],
+   "invert_corr_triangular": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "load_megamat_dff": [
+    "al_analysis/scripts"
+   ],
+   "load_natmix_dff": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "load_remy_fly_binary_responses": [
+    "al_analysis/package"
+   ],
+   "load_remy_megamat_kc_binary_responses": [
+    "al_analysis/package"
+   ],
+   "makedirs": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "mean_of_fly_corrs": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "mean_response_desc": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "megamat_odor_names": [
+    "al_analysis/package"
+   ],
+   "n_choose_2": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "np_save": [
+    "al_analysis/test"
+   ],
+   "odor_is_megamat": [
+    "al_analysis/package"
+   ],
+   "panel2name_order": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "paper_repro_kws": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "plot_all_roi_mean_responses": [
+    "al_analysis/package"
+   ],
+   "plot_cols_with_diff_colormaps": [
+    "al_analysis/scripts"
+   ],
+   "plot_corr": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "plot_fmt": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "plot_n": [
+    "al_analysis/scripts"
+   ],
+   "plot_n_per_odor_and_glom": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "plot_n_per_odor_pair": [
+    "al_analysis/scripts"
+   ],
+   "plot_responses": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "plot_responses_and_corr": [
+    "al_analysis/package"
+   ],
+   "plot_responses_err": [
+    "al_analysis/scripts"
+   ],
+   "print_curr_mem_usage": [
+    "al_analysis/package"
+   ],
+   "produces_output": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "prompt_if_changed": [
+    "al_analysis/test"
+   ],
+   "read_csv": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_json": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_parquet": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_pickle": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "remy_binary_response_dir": [
+    "al_analysis/package"
+   ],
+   "remy_data_dir": [
+    "al_analysis/package"
+   ],
+   "remy_date_col": [
+    "al_analysis/package"
+   ],
+   "remy_fly_binary_response_fname": [
+    "al_analysis/package"
+   ],
+   "remy_fly_cols": [
+    "al_analysis/package"
+   ],
+   "remy_fly_id": [
+    "al_analysis/package"
+   ],
+   "remy_megamat_sparsity": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "response_calc_params_json_name": [
+    "al_analysis/package"
+   ],
+   "response_stat_fn": [
+    "al_analysis/package"
+   ],
+   "roi_label": [
+    "al_analysis/package"
+   ],
+   "roi_plot_kws": [
+    "al_analysis/package"
+   ],
+   "roimean_plot_kws": [
+    "al_analysis/package"
+   ],
+   "rotate_xticklabels": [
+    "al_analysis/package"
+   ],
+   "save_figs": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "savefig": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "sent_to_remy": [
+    "al_analysis/package"
+   ],
+   "should_ignore_existing": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "signedmax_orn_dff_dir": [
+    "al_analysis/test"
+   ],
+   "sort_concs": [
+    "al_analysis/package"
+   ],
+   "sort_fly_roi_cols": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "sort_odors": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "stack_drop_na": [
+    "al_analysis/package",
+    "al_analysis/scripts"
+   ],
+   "stack_keep_na": [
+    "al_analysis/package"
+   ],
+   "to_csv": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "to_json": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "to_parquet": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "to_pickle": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "verbose": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "warn": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "written_since_proc_start": [
+    "al_analysis/package",
+    "al_analysis/test"
+   ],
+   "zscore_traces_per_recording": [
+    "al_analysis/package"
+   ]
+  },
+  "al_analysis.mb_model": {
+   "ALLOW_DIRTY_OLFSYSM_ENV_VAR": [
+    "al_analysis/test"
+   ],
+   "AL_INH_PARAMS": [
+    "al_analysis/test"
+   ],
+   "APL_DYNAMICS_PARAMS": [
+    "al_analysis/test"
+   ],
+   "APL_INH_FORM_PARAMS": [
+    "al_analysis/test"
+   ],
+   "APL_TUNING_PARAMS": [
+    "al_analysis/test"
+   ],
+   "APL_UNIT": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "APL_WEIGHT_NAMES": [
+    "al_analysis/test"
+   ],
+   "BOUTON_DEPLETION_PARAMS": [
+    "al_analysis/test"
+   ],
+   "BOUTON_ID": [
+    "al_analysis/test"
+   ],
+   "BOUTON_MODEL_KW_LIST": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "CI": [
+    "al_analysis/scripts"
+   ],
+   "CLASS_SIZE_FRAC_THRESH": [
+    "al_analysis/scripts"
+   ],
+   "CLAW_ID": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "CLAW_MODEL_KW_LIST": [
+    "al_analysis/test"
+   ],
+   "CLAW_SAT_PARAMS": [
+    "al_analysis/test"
+   ],
+   "EXPECTED_MODEL_PNKC_CLASSES": [
+    "al_analysis/scripts"
+   ],
+   "EXT_INH_RECORDED_PARAMS": [
+    "al_analysis/test"
+   ],
+   "FULL_MODEL_KW_LIST": [
+    "al_analysis/scripts"
+   ],
+   "FitMBModelOutputs": [
+    "al_analysis/test"
+   ],
+   "KC_ID": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "KC_SPIKING_PARAMS": [
+    "al_analysis/test"
+   ],
+   "KC_TYPE": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "MIX_NAME_PREFIXES": [
+    "al_analysis/scripts"
+   ],
+   "MODEL_KW_LIST": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "MinMaxDict": [
+    "al_analysis/scripts"
+   ],
+   "NATMIX_ORN_RESPONSE_THRESH": [
+    "al_analysis/scripts"
+   ],
+   "NONCLAW_MODEL_KW_LIST": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "NoCachedModelOutputsError": [
+    "al_analysis/scripts"
+   ],
+   "ONESTEP_LR_KEY": [
+    "al_analysis/test"
+   ],
+   "OlfsysmBuildError": [
+    "al_analysis/test"
+   ],
+   "PN_ID": [
+    "al_analysis/test"
+   ],
+   "QUICK_MODEL_KW_LIST": [
+    "al_analysis/test"
+   ],
+   "REFRACTORY_PERIOD": [
+    "al_analysis/scripts"
+   ],
+   "REMY_KC_RESPONSE_THRESHOLD": [
+    "al_analysis/scripts"
+   ],
+   "STRICT_CLEAN_OLFSYSM": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "TIME_PARAMS": [
+    "al_analysis/test"
+   ],
+   "TRY_ALL_MODELS_WITH": [
+    "al_analysis/scripts"
+   ],
+   "TRY_BOUTON_MODELS_WITH": [
+    "al_analysis/scripts"
+   ],
+   "TRY_CLAW_MODELS_WITH": [
+    "al_analysis/scripts"
+   ],
+   "TRY_NONCLAW_MODELS_WITH": [
+    "al_analysis/scripts"
+   ],
+   "UNIFORM_MODEL_KWS": [
+    "al_analysis/test"
+   ],
+   "__file__": [
+    "model_experiment_queue"
+   ],
+   "_fixed_param_model_kws": [
+    "model_experiment_queue"
+   ],
+   "_get_fixed_params": [
+    "al_analysis/test"
+   ],
+   "abbrev_model_id": [
+    "al_analysis/scripts"
+   ],
+   "add_missing_cells_to_nonresponders": [
+    "al_analysis/scripts"
+   ],
+   "analyze_spatial_claws": [
+    "al_analysis/scripts"
+   ],
+   "apl_dynamics_param_dict": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "apl_point_coord_cols": [
+    "model_experiment_queue"
+   ],
+   "apl_synapses_path": [
+    "model_experiment_queue"
+   ],
+   "assert_fit_and_plot_outputs_equal": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "assert_fit_outputs_equal": [
+    "al_analysis/test"
+   ],
+   "assert_param_dicts_equal": [
+    "al_analysis/test"
+   ],
+   "bootstrapped_corr": [
+    "al_analysis/scripts"
+   ],
+   "bouton_glomerulus_probs": [
+    "al_analysis/test"
+   ],
+   "calc_mix_suppression": [
+    "al_analysis/scripts"
+   ],
+   "check_model_kws_unique": [
+    "al_analysis/scripts"
+   ],
+   "claw2bouton_from_wPNKC": [
+    "al_analysis/test"
+   ],
+   "claw_coord_cols": [
+    "al_analysis/test"
+   ],
+   "connectome_APL_weights": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "connectome_KCKC_weights": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "connectome_wPNKC": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "count_flies_and_rois": [
+    "al_analysis/scripts"
+   ],
+   "default_model_odor_startstop_times": [
+    "al_analysis/test"
+   ],
+   "dff_col": [
+    "al_analysis/test"
+   ],
+   "dff_to_spiking_data_csv_name": [
+    "al_analysis/test"
+   ],
+   "dff_to_spiking_model_choices_csv_name": [
+    "al_analysis/test"
+   ],
+   "dict_seq_product": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "diff_col2desc": [
+    "al_analysis/scripts"
+   ],
+   "drop_binaries_mixdilutions_and_pfo": [
+    "al_analysis/scripts"
+   ],
+   "drop_silent_model_cells": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "est_spike_delta_col": [
+    "al_analysis/test"
+   ],
+   "eval_and_check_compatible": [
+    "al_analysis/test"
+   ],
+   "exclude_params": [
+    "al_analysis/scripts"
+   ],
+   "fit_and_plot_mb_model": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "fit_dff2spiking_from_remypaper_flies_and_hallem": [
+    "al_analysis/test"
+   ],
+   "fit_dff2spiking_model": [
+    "al_analysis/test"
+   ],
+   "fit_mb_model": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "fitandplot_finished_writing": [
+    "al_analysis/test"
+   ],
+   "fixed_params_to_fit_mb_model_kws": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "format_model_params": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "format_response_class": [
+    "al_analysis/scripts"
+   ],
+   "format_weights": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "get_apl_unit_coupling": [
+    "al_analysis/test"
+   ],
+   "get_connectome_wPNKC_params": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "get_diff_col": [
+    "al_analysis/scripts"
+   ],
+   "get_dynamics": [
+    "al_analysis/test"
+   ],
+   "get_fitandplot_model_kw_list": [
+    "al_analysis/test"
+   ],
+   "get_fitmbmodel_default": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "get_fly_color_series": [
+    "al_analysis/scripts"
+   ],
+   "get_odor_fname_suffix": [
+    "al_analysis/scripts"
+   ],
+   "get_param_subset": [
+    "al_analysis/test"
+   ],
+   "get_sim_var": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "get_thr_and_APL_weights": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "get_time_index": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "glomerulus_col": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "hemibrain_paper_repro_kws": [
+    "al_analysis/test"
+   ],
+   "hemibrain_voxel_um": [
+    "model_experiment_queue"
+   ],
+   "is_mix": [
+    "al_analysis/scripts"
+   ],
+   "kc_spiking_param_dict": [
+    "model_experiment_queue"
+   ],
+   "kc_type_hue_order": [
+    "al_analysis/scripts"
+   ],
+   "load_and_plot_dynamics": [
+    "al_analysis/scripts"
+   ],
+   "load_and_plot_dynamics_cli": [
+    "al_analysis/test"
+   ],
+   "load_apl_points": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "load_apl_unit_centroids": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "load_apl_unit_distances": [
+    "al_analysis/test"
+   ],
+   "load_dynamics": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "load_remy_megamat_kc_responses": [
+    "al_analysis/scripts"
+   ],
+   "load_remy_megamat_mean_kc_corrs": [
+    "al_analysis/scripts"
+   ],
+   "logistic": [
+    "al_analysis/scripts"
+   ],
+   "make_fixed_param_kc_simulator": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "make_kc_data_loss": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "make_multi_condition_loss": [
+    "al_analysis/test"
+   ],
+   "max_apl_unit_coupling": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "mean_indices_between_spikes": [
+    "al_analysis/test"
+   ],
+   "mean_response_rates": [
+    "al_analysis/test"
+   ],
+   "mean_seconds_between_spikes": [
+    "al_analysis/test"
+   ],
+   "megamat_orn_deltas": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "min_indices_between_spikes": [
+    "al_analysis/test"
+   ],
+   "min_seconds_between_spikes": [
+    "al_analysis/test"
+   ],
+   "model_mb_responses": [
+    "al_analysis/package",
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "model_pnkc_class": [
+    "al_analysis/scripts"
+   ],
+   "model_provenance": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "model_provenance_name": [
+    "al_analysis/test"
+   ],
+   "n_isi_less_than_n_indices": [
+    "al_analysis/test"
+   ],
+   "n_isi_less_than_time_seconds": [
+    "al_analysis/test"
+   ],
+   "natmix_orn_deltas": [
+    "al_analysis/scripts",
+    "model_experiment_queue"
+   ],
+   "olfsysm_build_info": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "olfsysm_checkout_info": [
+    "al_analysis/test"
+   ],
+   "olfsysm_checkout_path": [
+    "model_experiment_queue"
+   ],
+   "olfsysm_clean_problems": [
+    "al_analysis/test"
+   ],
+   "olfsysm_is_clean": [
+    "al_analysis/test"
+   ],
+   "onestep_lr_cache_key": [
+    "al_analysis/test"
+   ],
+   "optimizable_model_params": [
+    "al_analysis/scripts"
+   ],
+   "optimize_mb_model_params": [
+    "al_analysis/scripts",
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "osm": [
+    "model_experiment_queue"
+   ],
+   "paper_hemibrain_output_dir": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "paper_megamat_orn_deltas": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "paper_repro_kws": [
+    "al_analysis/test"
+   ],
+   "paper_uniform_model_responses": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "paper_uniform_output_dir": [
+    "al_analysis/test"
+   ],
+   "plot_apl_activity_sections": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "plot_avg_mixsupp": [
+    "al_analysis/scripts"
+   ],
+   "plot_dynamics": [
+    "al_analysis/test"
+   ],
+   "plot_means_and_counts": [
+    "al_analysis/scripts"
+   ],
+   "plot_response_class_summary": [
+    "al_analysis/scripts"
+   ],
+   "plot_spike_rasters": [
+    "al_analysis/scripts"
+   ],
+   "predict_spiking_from_dff": [
+    "al_analysis/test"
+   ],
+   "print_logistic_scaling_effect": [
+    "al_analysis/scripts"
+   ],
+   "read_model_output": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_onestep_lr_cache": [
+    "al_analysis/test"
+   ],
+   "read_orn_deltas": [
+    "al_analysis/scripts"
+   ],
+   "read_param_csv": [
+    "al_analysis/test"
+   ],
+   "read_params": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_parquet": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_spike_counts": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "read_tuned_params": [
+    "al_analysis/test"
+   ],
+   "remy_megamat_kc_targets": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "remypaper_dff2spiking_data_dir": [
+    "al_analysis/test"
+   ],
+   "repo_info": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "require_clean_olfsysm": [
+    "al_analysis/test"
+   ],
+   "save_and_remove_from_param_dict": [
+    "al_analysis/scripts"
+   ],
+   "save_dataarray": [
+    "al_analysis/test"
+   ],
+   "scale_dff_to_est_spike_deltas_using_hallem": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "sort_rois_by_response_classes": [
+    "al_analysis/scripts"
+   ],
+   "spike_delta_col": [
+    "al_analysis/test"
+   ],
+   "step_around": [
+    "al_analysis/test"
+   ],
+   "summarize_isi": [
+    "al_analysis/scripts"
+   ],
+   "summarize_response_classes": [
+    "al_analysis/scripts"
+   ],
+   "time_param_dict": [
+    "al_analysis/test",
+    "model_experiment_queue"
+   ],
+   "uniform_bouton_wPNKC": [
+    "al_analysis/test"
+   ],
+   "update_var2range": [
+    "al_analysis/scripts"
+   ],
+   "validation2_orn_deltas": [
+    "model_experiment_queue"
+   ],
+   "variable_n_claw_options": [
+    "al_analysis/test"
+   ],
+   "view_apl_activity_3d": [
+    "al_analysis/scripts",
+    "al_analysis/test"
+   ],
+   "write_model_provenance": [
+    "al_analysis/test"
+   ],
+   "written_since_proc_start": [
+    "al_analysis/test"
+   ]
+  }
+ },
+ "sources": {
+  "al_analysis/package": 8,
+  "al_analysis/scripts": 33,
+  "al_analysis/test": 23,
+  "al_analysis/test_scripts": 7,
+  "al_analysis/top-level": 6,
+  "model_experiment_queue": 161
+ }
+}
