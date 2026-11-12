@@ -9,10 +9,13 @@ import pandas as pd
 from hong2p.pandas import pd_allclose, pd_indices_equal
 
 from al_analysis import al_util
-from al_analysis.al_util import (data_root, read_csv, read_parquet, load_megamat_dff,
-    flyroi_cols, fly_cols, diag_panel_str
+from al_analysis.al_util import (data_root, read_csv, read_parquet, flyroi_cols,
+    fly_cols, diag_panel_str
 )
-from al_analysis.mb_model import (model_mb_responses, paper_megamat_orn_deltas,
+# the model (needs al_analysis's `model` extra), and the data it reads (the rest of this
+# script's inputs, in data_root, are al_analysis's)
+from pyolfsysm.util import data_root as model_data_root, load_megamat_dff
+from pyolfsysm.mb_model import (model_mb_responses, paper_megamat_orn_deltas,
     paper_hemibrain_output_dir, paper_uniform_model_responses, read_orn_deltas,
     read_spike_counts, KC_ID
 )
@@ -59,7 +62,7 @@ def main():
     # - dff2spiking_model_input.csv (probably not used, in favor of parquet)
     # which together should be sufficient to recreate dF/F -> spiking model I would
     # typically use
-    model_dir = data_root / 'internal'
+    model_dir = model_data_root / 'internal'
     #
 
     # this directory contains both [pebbled|GH146]_ij_certain-roi_stats.csv
@@ -184,7 +187,9 @@ def main():
         # both calls?)?
         return flies_dropped.loc[~flies_dropped.isna().T.all()].copy()
 
-    dff2spiking_committed_dir = data_root / 'internal/should_match_paper_dff2spiking'
+    dff2spiking_committed_dir = (model_data_root /
+        'internal/should_match_paper_dff2spiking'
+    )
 
     # TODO anything to even check against here? megamat subset still needs to be
     # generated separately, because of the way some of the normalization works, right?
@@ -378,7 +383,7 @@ def main():
     # TODO TODO fuck, why are these still diff from paper deltas?
 
     # TODO TODO from loading old committed dF/F->spiking model fit pickle:
-    model = pd.read_pickle(data_root / (
+    model = pd.read_pickle(model_data_root / (
         'sent_to_remy/2025-03-18/dff_scale-to-avg-max__data_pebbled__hallem-tune_'
         'False__pn2kc_hemibrain__weight-divisor_20__drop-plusgloms_False__target-sp'
         '_0.0915/dff2spiking_fit.p'

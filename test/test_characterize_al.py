@@ -61,10 +61,10 @@ E2E_QUICK_RECORDING: str = 'diagnostics1'
 # takes ~1 min per recording)
 E2E_THORSYNC_RECORDING: Tuple[int, str] = (2, 'diagnostics3')
 
-# a CSV / pickle pair of consensus ORN responses (megamat panel, 9 flies)
-megamat_csv_dir: Path = (al_data_root / 'sent_to_remy' /
-    '2025-09-30_tom_orn_data_signed-max' / 'megamat_signed-max'
-)
+# a CSV / pickle pair of consensus ORN responses (megamat panel, 9 flies), and the
+# per-ROI pickle (copies of files in pyolfsysm's data, `sent_to_remy/2025-09-30_tom_orn_
+# data_signed-max/megamat_signed-max`, which was in al_analysis/data until 2026-11)
+megamat_csv_dir: Path = test_data_dir / 'orn_signed_max' / 'megamat_signed-max'
 
 
 def _nas_available() -> bool:

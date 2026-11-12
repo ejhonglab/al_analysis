@@ -1,6 +1,7 @@
 
 import inspect
 from pathlib import Path
+import sys
 import traceback
 from typing import Any, Callable, Dict, List, Set
 from contextlib import contextmanager
@@ -18,12 +19,15 @@ from hong2p.viz import matshow
 from hong2p.xarray import get_example_orn_dynamics
 
 from al_analysis.al_util import (MultipleSavesPerRunException, read_json, plot_fmt,
-    load_natmix_dff, mean_of_fly_corrs, diverging_cmap, savefig, sort_fly_roi_cols
+    read_csv, mean_of_fly_corrs, diverging_cmap, savefig, sort_fly_roi_cols
 )
 from al_analysis import al_util
 from al_analysis.al_util import warn
-# just to include in produces_output test
-from al_analysis.mb_model import save_dataarray
+# just to include in produces_output test (the model's, only with the `model` extra)
+try:
+    from pyolfsysm.mb_model import save_dataarray
+except ImportError:
+    pass
 
 # TODO better way?
 from .conftest import test_data_dir
@@ -94,7 +98,10 @@ save_fn_name2suffix: Dict[str, str] = {
 # TODO convert to fixture?
 # TODO add read_csv arg to drop odor2 != solvent anyway? thats what warning i'm
 # silencing is about, and i do that everywhere i use this in here currently
-df: pd.DataFrame = load_natmix_dff(warn_=False, verbose=False)
+# (a copy of what pyolfsysm.util.load_natmix_dff loads)
+df: pd.DataFrame = read_csv(test_data_dir / 'orn_signed_max' / 'kiwi_control_signed-max' /
+    'ij_certain-roi_stats.csv', warn_=False, verbose=False
+)
 
 def test_mean_of_fly_corrs():
     """Tests `mean_of_fly_corrs` runs, on data with and without a panel level.
@@ -585,6 +592,39 @@ def test_setting_assignment_reaches_hong2p_io(tmp_path):
     assert al_util.verbose is orig_verbose
     assert al_util.save_figs is orig_save_figs
 
+
+
+@pytest.mark.parametrize('name', sorted(al_util._forwarded_to_pyolfsysm))
+def test_model_names_forwarded_to_pyolfsysm(name, monkeypatch):
+    """Tests al_util's model-only names are read from, and assigned on, pyolfsysm.util.
+    """
+    util = pytest.importorskip('pyolfsysm.util')
+
+    assert name not in vars(al_util)
+    assert getattr(al_util, name) is getattr(util, name)
+    assert name in dir(al_util)
+
+    value = object()
+    monkeypatch.setattr(al_util, name, value)
+    assert getattr(util, name) is value
+    assert getattr(al_util, name) is value
+    assert name not in vars(al_util)
+    monkeypatch.undo()
+    assert getattr(al_util, name) is not value
+
+
+def test_model_names_without_pyolfsysm(monkeypatch):
+    """Tests importing a model-only name from al_util without pyolfsysm says how to
+    install it (and that al_util itself does not need it).
+    """
+    # makes `import pyolfsysm.util` fail, as if not installed
+    monkeypatch.setitem(sys.modules, 'pyolfsysm.util', None)
+    with pytest.raises(ModuleNotFoundError, match=r'\[model\]'):
+        from al_analysis.al_util import load_natmix_dff
+    with pytest.raises(ModuleNotFoundError, match=r'\[model\]'):
+        al_util.remy_megamat_sparsity
+    # AL names are unaffected
+    assert al_util.sort_fly_roi_cols is sort_fly_roi_cols
 
 def test_panel_orders_match_natmix():
     """Tests hong2p.olf's copies of natmix's panel orders still match natmix.

@@ -52,7 +52,9 @@ from al_analysis.al_util import (data_root, fly_cols, read_csv, read_parquet,
     n_choose_2, invert_corr_triangular, corr_triangular, mean_of_fly_corrs,
     plot_corr, to_csv, to_parquet
 )
-from al_analysis.mb_model import (paper_hemibrain_output_dir,
+# (needs al_analysis's `model` extra)
+from pyolfsysm.util import signedmax_orn_dff_dir
+from pyolfsysm.mb_model import (paper_hemibrain_output_dir,
     paper_uniform_model_responses, drop_silent_model_cells
 )
 
@@ -336,9 +338,8 @@ if use_old_meanstat_orn_data:
     #
     orn_csv = data_root / 'sent_to_remy/2023-10-29/pebbled_ij_certain-roi_stats.csv'
 else:
-    orn_dir = (data_root /
-        'sent_to_remy/2025-09-30_tom_orn_data_signed-max/megamat_signed-max'
-    )
+    # (in pyolfsysm's data since 2026-11)
+    orn_dir = signedmax_orn_dff_dir / 'megamat_signed-max'
     orn_csv = orn_dir / 'ij_certain-roi_stats.csv'
 
 odf = read_csv(orn_csv, drop_old_odor_levels=True).loc['megamat']

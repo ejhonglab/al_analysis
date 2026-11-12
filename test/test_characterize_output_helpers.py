@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 from al_analysis import al_util as out
 
 from .characterize import check_frozen
+from .conftest import test_data_dir
 
 
 matplotlib.use('agg')
@@ -683,11 +684,14 @@ def test_savefig_check_unchanged_other_fmt(tmp_path, check_unchanged, monkeypatc
 def test_read_csv_frozen():
     """Tests `read_csv` on a committed response CSV (and its pickle check) is unchanged.
     """
-    df = out.load_natmix_dff(warn_=False, verbose=False)
+    # (a copy of the CSV / pickle `load_natmix_dff` reads, now in pyolfsysm's data)
+    csv = (test_data_dir / 'orn_signed_max' / 'kiwi_control_signed-max' /
+        'ij_certain-roi_stats.csv'
+    )
+    df = out.read_csv(csv, warn_=False, verbose=False)
     check_frozen('output_helpers/read_csv_natmix', df)
 
     # the same CSV, without dropping the old odor levels
-    csv = out.signedmax_orn_dff_dir / 'kiwi_control_signed-max/ij_certain-roi_stats.csv'
     df2 = out.read_csv(csv, drop_old_odor_levels=False, verbose=False)
     assert list(df2.index.names) == ['panel', 'is_pair', 'odor1', 'odor2', 'repeat']
     assert list(df2.columns.names) == ['date', 'fly_num', 'roi']

@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import faulthandler
 import os
 from os.path import join, split, exists, islink, getmtime
 from pprint import pprint, pformat
@@ -105,7 +106,23 @@ from al_analysis.al_util import (data_root, cmap, plot_all_roi_mean_responses,
     roi_plot_kws, count_n_per_odor_and_glom, format_panel, roi_label, mean_response_desc
 )
 from al_analysis import al_util
-from al_analysis.mb_model import model_mb_responses
+# (the model step's `model_mb_responses`, from pyolfsysm, is imported by
+# `_import_model_mb_responses`, only if that step runs)
+
+# Settings that importing the model (mb_model) applied here, while this module imported it
+# (until the model moved to pyolfsysm, 2026-11), kept so the AL analysis runs as before:
+# the Agg backend, and some warnings as errors.
+mpl.use('Agg')
+faulthandler.enable(file=sys.stderr, all_threads=True)
+# removed in pandas 3 (where Copy-on-Write is always enabled)
+try:
+    warnings.filterwarnings('error', category=pd.errors.SettingWithCopyWarning)
+except AttributeError:
+    pass
+warnings.filterwarnings('error', message='FixedFormatter should only be used together '
+    'with FixedLocator'
+)
+warnings.filterwarnings('error', category=FutureWarning)
 
 
 # TODO just do invalid='raise'? (divide/over/under are options besides invalid)
@@ -9916,6 +9933,22 @@ def process_sam_glomeruli_names(df: pd.DataFrame, glomerulus_col: str = 'roi', *
 # drawing ROIs (without using some more processed version) (leaning towards just trying
 # to use the max-trial-dff or something instead though... may still be useful for
 # checking that?)
+def _import_model_mb_responses() -> Callable:
+    """Returns `pyolfsysm.mb_model.model_mb_responses`, for the model step (`-s` without
+    'model').
+
+    Raises ModuleNotFoundError, saying to install al_analysis's `model` extra, if pyolfsysm
+    (the model, part of olfsysm since 2026-11) is not installed.
+    """
+    from al_analysis._pyolfsysm_shim import import_pyolfsysm
+    try:
+        return import_pyolfsysm('pyolfsysm.mb_model').model_mb_responses
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(f'the model step of al-analysis needs the model. {e}. Or '
+            "skip the model step (it is skipped by default; the -s/--skip steps must "
+            "include 'model')", name=e.name
+        ) from e
+
 def main():
     """Runs analysis on the recordings selected by CLI args (see `--help`).
 
@@ -10154,6 +10187,10 @@ def main():
                 f' comma separated list of elements from {skippable_steps}. '
                 f"got '{steps_to_skip}'."
             )
+
+    if 'model' not in steps_to_skip:
+        # before the (long) rest of the analysis, if the model is not installed
+        _import_model_mb_responses()
 
     # TODO now it always warns, even if we are just using default! don't do that, or
     # delete this! (may need to change so no default in argparse itself? and probably
@@ -13106,6 +13143,7 @@ def main():
             # NOTE: use_consensus_for_all_acrossfly must be False if I want to try using
             # certain_df again here (if True, certain_df is redefined to consensus_df
             # above)
+            model_mb_responses = _import_model_mb_responses()
             model_mb_responses(consensus_df, modeling_root,
                 roi_depths=roi_best_plane_depths,
                 skip_sensitivity_analysis=skip_sensitivity_analysis,

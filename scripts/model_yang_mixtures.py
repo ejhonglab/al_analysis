@@ -44,15 +44,18 @@ from natmix import drop_mix_dilutions
 
 from al_analysis import al_util
 from al_analysis.al_util import (savefig, plot_responses, plot_responses_err,
-    plot_n_per_odor_and_glom, read_parquet, to_csv, to_parquet, data_root, fly_cols,
-    flyroi_cols, warn, cluster_rois, _have_fly_cols, add_legends_and_colorbars,
+    plot_n_per_odor_and_glom, read_parquet, to_csv, to_parquet, fly_cols,
+    flyroi_cols, warn, cluster_rois, add_legends_and_colorbars,
     diverging_cmap, diverging_cmap_tophalf, plot_cols_with_diff_colormaps,
-    panel2name_order, load_natmix_dff, plot_corr, mean_of_fly_corrs, format_panel,
+    panel2name_order, plot_corr, mean_of_fly_corrs, format_panel,
     mean_response_desc, plot_fmt, to_pickle, to_json, read_json,
     add_check_outputs_unchanged_CLI_flag_and_parse_args
 )
 from al_analysis.al_util import mean_response_desc as orn_response_desc
-from al_analysis.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
+# the model (needs al_analysis's `model` extra), and the data it reads (Yang's data and
+# Remy's natmix KC data are pyolfsysm's, since 2026-11)
+from pyolfsysm.util import data_root, _have_fly_cols, load_natmix_dff
+from pyolfsysm.mb_model import (megamat_orn_deltas, fit_and_plot_mb_model,
     natmix_orn_deltas, get_thr_and_APL_weights, format_model_params,
     get_odor_fname_suffix, KC_ID, CLAW_ID, dict_seq_product, abbrev_model_id,
     read_params, exclude_params, calc_mix_suppression, get_diff_col, diff_col2desc,

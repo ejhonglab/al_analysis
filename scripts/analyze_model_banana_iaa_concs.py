@@ -7,7 +7,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from al_analysis.al_util import cluster_rois
-from al_analysis.mb_model import drop_silent_model_cells
+# (needs al_analysis's `model` extra)
+from pyolfsysm.mb_model import drop_silent_model_cells
 
 
 def main():

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Summarizes a data-audit CSV (from `AL_ANALYSIS_DATA_AUDIT=<csv> pytest ...`).
+"""Summarizes data-audit CSVs (from `AL_ANALYSIS_DATA_AUDIT=<csv> pytest ...` here, and
+`OLFSYSM_DATA_AUDIT=<csv> pytest ...` in olfsysm, whose tests are the model's).
 
-Prints, for each folder under al_analysis/data and test/test_data, which side of the
-planned al_analysis / pyolfsysm split opened files in it:
-- by code: 'model' if mb_model or wpnkc_shuffles was on the stack, 'al' if one of the
-  AL modules (al_analysis, plot_roi*, load_antennal_csv) was (and no model module),
-  'al_util' if only al_util was, 'test' if only test code was;
+Prints, for each folder under the audited data roots (labelled 'data' for the repository's
+own data, al_analysis/data or pyolfsysm/data, 'test_data', and 'pyolfsysm_data' /
+'al_analysis_data' for the other side's data), which side of the al_analysis / pyolfsysm
+split opened files in it:
+- by code: 'model' if pyolfsysm (or al_analysis's modules forwarding to it) was on the
+  stack, 'al' if one of the AL modules (al_analysis, plot_roi*, load_antennal_csv) was
+  (and no model module), 'al_util' if only al_util was, 'test' if only test code was;
 - by test file: model tests vs AL tests (see `MODEL_TEST_FILES`).
+
+Run one summary per repository's CSV ('data' means a different folder in each).
 
 Usage: ./venv/bin/python test/data_audit_summary.py <audit.csv> [<audit2.csv> ...]
 """
@@ -21,12 +26,11 @@ import pandas as pd
 
 MODEL_TEST_FILES = ('test_mb_model.py', 'test_characterize_model.py',
     'test_wpnkc_shuffles.py', 'test_model_apl_taum.py', 'test_model_provenance.py',
-    'test_model_timing.py', 'test_claw_bouton_options.py', 'test_e43_presentation.py',
-    'test_multi_condition_loss.py', 'test_olfsysm_save_buffers.py',
-    'test_pn_ln_params.py'
+    'test_model_timing.py', 'test_claw_bouton_options.py', 'test_multi_condition_loss.py',
+    'test_olfsysm_save_buffers.py', 'test_pn_ln_params.py'
 )
 AL_TEST_FILES = ('test_al_analysis.py', 'test_al_util.py', 'test_characterize_al.py',
-    'test_characterize_output_helpers.py'
+    'test_characterize_output_helpers.py', 'test_import_surface.py'
 )
 
 
@@ -46,8 +50,7 @@ def test_group(test: str) -> str:
 
 def summarize(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df['folder'] = df['root'].map({'data': 'data/', 'test_data': 'test_data/'}) + \
-        df['folder'].astype(str)
+    df['folder'] = df['root'].astype(str) + '/' + df['folder'].astype(str)
     df['test_group'] = df['test'].map(test_group)
     df['opened'] = df['event'].str.startswith('open')
 

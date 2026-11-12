@@ -50,20 +50,36 @@ _use_tmp_hong2p_data_if_missing()
 
 
 # Opt-in data audit: AL_ANALYSIS_DATA_AUDIT=<csv path> records every file opened (and
-# every directory listed) under al_analysis/data and test/test_data, per test, to that
-# CSV (appending, so several pytest runs can share one CSV). Summarize it with
-# `test/data_audit_summary.py`. Only this process (and processes forked from it) is
-# audited, not subprocesses that start a new Python.
+# every directory listed) under al_analysis/data, test/test_data and (with the `model`
+# extra) pyolfsysm's data, per test, to that CSV (appending, so several pytest runs can
+# share one CSV; olfsysm's tests write the same columns with OLFSYSM_DATA_AUDIT). Summarize
+# it with `test/data_audit_summary.py`. Only this process (and processes forked from it)
+# is audited, not subprocesses that start a new Python.
 DATA_AUDIT_ENV_VAR = 'AL_ANALYSIS_DATA_AUDIT'
 
-# modules in the al_analysis package, by which side of the planned split they are on.
-# al_util is shared, so it does not decide the side on its own.
-_model_modules = ('mb_model', 'wpnkc_shuffles')
+# modules by which side of the split (2026-11) they are on: al_analysis's AL modules, the
+# model (pyolfsysm, and al_analysis's modules forwarding to it). al_util is shared, so it
+# does not decide the side on its own.
+_model_modules = ('mb_model', 'wpnkc_shuffles', '_pyolfsysm_shim')
 _al_modules = ('al_analysis', 'plot_roi', 'plot_roi_util', 'load_antennal_csv')
 
 _audit_state = dict(current='<session>', writer=None, file=None, seen=None, roots=None,
-    in_hook=False
+    pyolfsysm_dir=None, in_hook=False
 )
+
+
+def _package_dir(name: str):
+    """Returns the directory of package `name` (without importing it), or None."""
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec(name)
+    except Exception:
+        return None
+    if spec is None or spec.submodule_search_locations is None:
+        return None
+    for loc in spec.submodule_search_locations:
+        return os.path.realpath(str(loc))
+    return None
 
 
 def _audit_roots() -> Tuple[Tuple[str, str], ...]:
@@ -71,23 +87,25 @@ def _audit_roots() -> Tuple[Tuple[str, str], ...]:
     labels = ['data', 'test_data']
     # the editable install should point at the same tree, but in case the package is
     # installed elsewhere
-    try:
-        import importlib.util
-        spec = importlib.util.find_spec('al_analysis')
-        if spec is not None and spec.submodule_search_locations is not None:
-            for loc in spec.submodule_search_locations:
-                data = os.path.join(os.path.realpath(str(loc)), 'data')
-                if os.path.isdir(data) and data not in roots:
-                    roots.append(data)
-                    labels.append('data')
-    except Exception:
-        pass
+    installed = _package_dir('al_analysis')
+    if installed is not None:
+        data = os.path.join(installed, 'data')
+        if os.path.isdir(data) and data not in roots:
+            roots.append(data)
+            labels.append('data')
+    # to see whether the AL code reads the model's data (it should not)
+    pyolfsysm_dir = _package_dir('pyolfsysm')
+    if pyolfsysm_dir is not None and os.path.isdir(os.path.join(pyolfsysm_dir, 'data')):
+        roots.append(os.path.join(pyolfsysm_dir, 'data'))
+        labels.append('pyolfsysm_data')
 
     return tuple((r.rstrip(os.sep) + os.sep, label) for r, label in zip(roots, labels))
 
 
 def _caller_chain() -> Tuple[str, str]:
-    """Returns (al_analysis package modules on the stack, innermost repo frame).
+    """Returns (al_analysis / pyolfsysm modules on the stack, innermost repo frame).
+
+    pyolfsysm modules are named `pyolfsysm.<module>`.
     """
     chain = []
     innermost = ''
@@ -95,6 +113,7 @@ def _caller_chain() -> Tuple[str, str]:
     repo = str(repo_root) + os.sep
     conftest = os.path.join('test', 'conftest.py')
     venv = 'venv' + os.sep
+    pyolfsysm_dir = _audit_state['pyolfsysm_dir']
     while frame is not None:
         filename = frame.f_code.co_filename
         if filename.startswith(repo):
@@ -108,6 +127,13 @@ def _caller_chain() -> Tuple[str, str]:
                     if not chain or chain[-1] != module:
                         chain.append(module)
 
+        elif pyolfsysm_dir is not None and filename.startswith(pyolfsysm_dir):
+            module = 'pyolfsysm.' + os.path.splitext(filename[len(pyolfsysm_dir):])[0]
+            if not innermost:
+                innermost = f'{filename}:{frame.f_code.co_name}'
+            if not chain or chain[-1] != module:
+                chain.append(module)
+
         frame = frame.f_back
 
     # outermost first
@@ -116,7 +142,7 @@ def _caller_chain() -> Tuple[str, str]:
 
 def _side(chain: str) -> str:
     modules = chain.split('>') if chain else []
-    if any(m in _model_modules for m in modules):
+    if any(m in _model_modules or m.startswith('pyolfsysm.') for m in modules):
         return 'model'
 
     if any(m in _al_modules for m in modules):
@@ -254,7 +280,10 @@ def pytest_configure(config) -> None:
         ])
         f.flush()
 
-    _audit_state.update(writer=writer, file=f, seen=set(), roots=_audit_roots())
+    pyolfsysm_dir = _package_dir('pyolfsysm')
+    _audit_state.update(writer=writer, file=f, seen=set(), roots=_audit_roots(),
+        pyolfsysm_dir=None if pyolfsysm_dir is None else pyolfsysm_dir + os.sep
+    )
     _wrap_c_readers()
     # audit hooks can not be removed. this one does nothing once pytest_unconfigure
     # clears the writer.

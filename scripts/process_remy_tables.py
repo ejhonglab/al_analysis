@@ -38,9 +38,11 @@ def main():
     chemfig_tex_output_dir.mkdir(exist_ok=True)
 
     # TODO TODO delete. for testing changes to N plotting fns
-    from al_analysis.al_util import (load_natmix_dff, plot_n_per_odor_and_glom, savefig,
-        plot_n, plot_n_per_odor_pair, count_n_per_odor_and_glom
+    from al_analysis.al_util import (plot_n_per_odor_and_glom, savefig, plot_n,
+        plot_n_per_odor_pair, count_n_per_odor_and_glom
     )
+    # (needs al_analysis's `model` extra: this data moved with the model, 2026-11)
+    from pyolfsysm.util import load_natmix_dff
     orn_df = load_natmix_dff()
     # counts currently will have trials if i don't do this
     # (or if i don't do similar post-processing of counts to collapse across trials)
