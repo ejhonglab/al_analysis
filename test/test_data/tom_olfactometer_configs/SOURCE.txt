@@ -1,0 +1,4 @@
+Copies of olfactometer input YAMLs from https://github.com/tom-f-oconnell/tom_olfactometer_configs
+(commit 2e83ec72346f3817e629dd9aa22ba57a616aedeb), which `al-analysis` reads (via
+`load_olf_input_yaml`, default directory ~/src/tom_olfactometer_configs) for its odor
+metadata output. Used by test/test_characterize_al.py (through test/al_cli_driver.py).

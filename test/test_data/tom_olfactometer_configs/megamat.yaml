@@ -1,0 +1,101 @@
+
+generator: basic
+
+total_flow_ml_per_min: 2000.0
+odor_flow_ml_per_min: 200.0
+
+require_flow_controllers: False
+
+# Reformatted into settings.timing.*_us by the generator
+pre_pulse_s: 7
+pulse_s: 3
+post_pulse_s: 20
+
+n_repeats: 3
+
+# If this is False, the odors will be presented in the order in the list below.
+randomize_presentation_order: True
+
+odors:
+ # NOTE: dilute in water
+ # (pentanoic acid)
+ - name: valeric acid
+   log10_conc: -3
+   abbrev: va
+   solvent: water
+
+ - name: linalool
+   log10_conc: -3
+   abbrev: Lin
+
+ - name: B-citronellol
+   log10_conc: -3
+   abbrev: B-cit
+
+ - name: hexanal
+   log10_conc: -3
+   abbrev: 6al
+
+ - name: trans-2-hexenal
+   log10_conc: -3
+   abbrev: t2h
+
+ - name: 2-butanone
+   log10_conc: -3
+   abbrev: 2-but
+
+ # TODO VA4 activation (voshall 2008 review)?
+ - name: 2-heptanone
+   log10_conc: -3
+   abbrev: 2h
+
+ # TODO see a response in VA7l? see wilson et al 2003
+ - name: methyl salicylate
+   log10_conc: -3
+   abbrev: ms
+
+ # TODO see a response in VA7l? see wilson et al 2003
+ # TODO VA7m? see both l/m responses in badel
+ - name: benzaldehyde
+   log10_conc: -3
+   abbrev: benz
+
+ # TODO do i see any DA3 activation? DA4m? (hallem)
+ - name: 1-pentanol
+   log10_conc: -3
+   abbrev: 1-5ol
+
+# -----end first 10 odors ---------
+ # TODO any DA4m activation (hallem)?
+ # TODO TODO any DA4l activation (hallem)?
+ - name: 1-hexanol
+   log10_conc: -3
+   abbrev: 1-6ol
+
+ # TODO DA3 response (badel)?
+ - name: 1-octanol
+   log10_conc: -3
+   abbrev: 1-8ol
+
+ - name: pentyl acetate
+   log10_conc: -3
+   abbrev: pa
+
+ - name: ethyl butyrate
+   log10_conc: -3
+   abbrev: eb
+
+ - name: ethyl propionate
+   log10_conc: -3
+   abbrev: ep
+
+ # TODO VA4 activation (voshall 2008 review)?
+ - name: isoamyl acetate
+   log10_conc: -3
+   abbrev: IaA
+
+ # NOTE: dilute in water
+ - name: acetic acid
+   log10_conc: -3
+   abbrev: aa
+   solvent: water

@@ -1,0 +1,129 @@
+
+generator: basic
+
+total_flow_ml_per_min: 2000.0
+odor_flow_ml_per_min: 200.0
+
+require_flow_controllers: False
+
+# Reformatted into settings.timing.*_us by the generator
+pre_pulse_s: 7
+pulse_s: 3
+post_pulse_s: 20
+
+n_repeats: 3
+
+# If this is False, the odors will be presented in the order in the list below.
+randomize_presentation_order: True
+
+odors:
+ # NOTE: also in diagnostics (at -5)
+ - name: phenylacetaldehyde
+   log10_conc: -4
+   abbrev: PAA
+   # (fridge)
+   inventory: 4-7
+
+ - name: guaiacol
+   log10_conc: -3
+   abbrev: guai
+
+ - name: cis-4-heptenal
+   log10_conc: -4
+   abbrev: Z4-7al
+   inventory: F-64
+
+ - name: 1-propanol
+   log10_conc: -3
+   abbrev: 1-prop
+   solvent: water
+
+ # NOTE: this is also in my diagnostics (at -5). could exclude from diagnostics for now,
+ # while doing these experiments.
+ - name: geosmin
+   log10_conc: -4
+   abbrev: geos
+
+ - name: 2-methylisoborneol
+   log10_conc: -4
+   abbrev: 2-mib
+   solvent: water
+   # (freezer)
+   inventory: 20-6
+
+ - name: 1-octen-3-one
+   log10_conc: -4
+   abbrev: 1o3one
+   # (fridge)
+   inventory: 4-21
+
+ - name: ethyl octanoate
+   log10_conc: -2
+   abbrev: EtOct
+
+ - name: phenethylamine
+   log10_conc: -4
+   abbrev: PEA
+   solvent: water
+   inventory: NA-1
+
+ - name: 2-methylbutyl acetate
+   log10_conc: -3
+   abbrev: 2-mba
+
+ - name: beta-myrcene
+   log10_conc: -2
+   abbrev: B-myr
+
+ - name: (-)-alpha-pinene
+   # 63.2uL into a TOTAL volume of 2mL
+   log10_conc: -1.5
+   abbrev: -aPine
+
+ - name: eucalyptol
+   # 35.5uL into a TOTAL volume of 2mL
+   log10_conc: -1.75
+   abbrev: euc
+
+ - name: (+)-pulegone
+   log10_conc: -2
+   abbrev: +pul
+
+ - name: sabinene
+   log10_conc: -3
+   abbrev: sab
+
+ - name: menthone
+   log10_conc: -3
+   abbrev: menth
+
+ - name: benzyl benzoate
+   log10_conc: -2
+   abbrev: bbenz
+
+ - name: longifolene
+   log10_conc: -2
+   abbrev: long
+
+ - name: (-)-beta-caryophyllene
+   log10_conc: -3
+   abbrev: -bCar
+
+ # NOTE: acute toxicity!
+ - name: 1-penten-3-one
+   log10_conc: -5
+   abbrev: 1p3one
+   # (freezer)
+   inventory: 20-5
+   # forgot to specify this in YAML earlier,but all data >= november 2023 should have
+   # had water as the solvent.
+   solvent: water
+
+ - name: methyl chavicol
+   log10_conc: -3
+   abbrev: mchav
+
+ - name: geraniol
+   log10_conc: -2
+   abbrev: ger
+

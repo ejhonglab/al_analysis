@@ -1,0 +1,361 @@
+generator: basic
+
+total_flow_ml_per_min: 2000.0
+odor_flow_ml_per_min: 200.0
+
+# The presence of either of the flow rate variables above should imply that the
+# flow controllers are required, so this is saying that we will check the flow
+# controllers if we can, but otherwise we won't let that prevent the experiment
+# from starting. If connected, the set points and current flows will be checked.
+require_flow_controllers: False
+
+# With this False, will use odor order in list below to assign odors to runs
+# (when # valves < # odors).
+randomly_split_odors_into_runs: False
+
+# Reformatted into settings.timing.*_us by the generator
+pre_pulse_s: 7
+pulse_s: 3
+post_pulse_s: 7
+
+n_repeats: 3
+
+# If this is False, the odors will be presented in the order in the list below.
+randomize_presentation_order: False
+
+# TODO maybe add support for always having solvent first w/ the basic.py
+# generator? should i require specifying it in the 'odors:' list below?
+
+odors:
+ # Trying to change the order to see if that improves responses here at all.
+ # Used to be after methyl salicylate.
+ - name: 3-methylthiopropanol
+   log10_conc: -5
+   glomerulus: DM3
+   abbrev: 3mtp
+   inventory: O-5, F-46
+   cid: 10448
+
+ # NOTE: dilute in water
+ - name: valeric acid
+   log10_conc: -4
+   glomerulus: DM6
+   abbrev: va
+   inventory: A-2
+   solvent: water
+   cid: 7991
+
+ - name: trans-2-hexenal
+   log10_conc: -6
+   glomerulus: DL5
+   abbrev: t2h
+   inventory: 4-16
+   # matches Remy's CID for megamat
+   cid: 5281168
+
+ - name: methyl salicylate
+   log10_conc: -3
+   glomerulus: DL1
+   abbrev: ms
+   inventory: O-18
+   # matches Remy's CID for megamat
+   cid: 4133
+
+ - name: alpha-terpineol
+   # NOTE: the actual conc is probably a bit lower, but the same order.
+   # Doesn't like the stay in the pipette...
+   log10_conc: -3
+   glomerulus: D
+   abbrev: a-terp
+   inventory: O-19
+   cid: 17100
+
+ - name: perfume geosmin
+   log10_conc: -5
+   glomerulus: DA2
+   abbrev: geos
+   # O-28 should be the one from perfumer's supply, which is 1% in DPG
+   inventory: O-28
+   # from looking up CAS 23333-91-7 listed on perfumer's supply website
+   # https://perfumersupplyhouse.com/product/geosmin-1-in-dpg/
+   cid: 1213
+
+ - name: ethyl 3-hydroxybutyrate
+   log10_conc: -6
+   glomerulus: DM5/VM5d
+   abbrev: e3hb
+   inventory: O-26
+   cid: 62572
+
+ - name: methyl hexanoate
+   log10_conc: -7
+   glomerulus: DM2
+   abbrev: mhex
+   inventory: F-24, F-25
+   cid: 7824
+
+ - name: methyl acetate
+   log10_conc: -7
+   glomerulus: DM4
+   abbrev: ma
+   inventory: F-20
+   cid: 6584
+
+ - name: ethyl acetate
+   log10_conc: -8
+   glomerulus: DM1
+   abbrev: ea
+   inventory: F-33, F-34
+   cid: 8857
+
+   # According to Grabe 2016 table S3, VA4 should also respond to 2h (at what conc?)
+ - name: 2-heptanone
+   log10_conc: -6
+   glomerulus: VM5d
+   abbrev: 2h
+   inventory: F-31
+   cid: 8051
+
+ - name: geranyl acetate
+   log10_conc: -4
+   glomerulus: VA6
+   abbrev: ga
+   inventory: 4-1, 4-2
+   # from searching CAS 105-87-3
+   cid: 1549026
+
+ # NOTE: dissolve in water
+ # NOTE: also used (at -4) for DM6. this seemed more reliable than HCl -1 (-1 treating
+ # stock ~30-40% [/whatever] as 100%)
+ - name: valeric acid
+   log10_conc: -3
+   glomerulus: DC4
+   abbrev: va
+   inventory: A-2
+   solvent: water
+   cid: 7991
+
+ # TODO probably rename to '(1S)-(+)-3-carene' as in Hallem (check same. don't actually
+ # see many people call it just this, so unclear where i got it from [if not a typo...])
+ - name: (1S)-(+)-carene
+   log10_conc: -3
+   glomerulus: DC1
+   abbrev: carene
+   inventory: F-3
+   # from searching CAS 498-15-7 (found on Sigma from product 441619)
+   cid: 443156
+
+ # TODO find replacement in the meantime?
+ # TODO TODO just use 1-octen-3-ol (at what conc?)
+ # Hasn't come in yet.
+ #- name: 1-hexen-3-ol
+ #  # Just guessing
+ #  log10_conc: -6
+ #  glomerulus: DC2
+ #  abbrev: 1h3ol
+ #  inventory: hasn't come in yet
+
+ - name: farnesol
+   log10_conc: -2
+   glomerulus: DC3
+   abbrev: farn
+   inventory: O-53
+   # from searching CAS 4602-84-0 (from Sigma product)
+   cid: 445070
+
+ - name: 4-heptanol
+   log10_conc: -6
+   glomerulus: VM2
+   abbrev: 4h-ol
+   inventory: F-55
+   cid: 11513
+
+ - name: 2-butanone
+   log10_conc: -6
+   # According to Grabe 2016 table S3, should also respond to 2h and va (at what conc?)
+   glomerulus: VM7d
+   # TODO update to remy's
+   abbrev: 2but
+   inventory: F-40
+   # matches Remy's megamat CID
+   cid: 6569
+
+ - name: 2,3-butanedione
+   log10_conc: -6
+   glomerulus: VA2
+   abbrev: 2,3-b
+   # Use newer one (F-39 probably)
+   inventory: F-38, F-39
+   cid: 650
+
+ # Bit messy
+ - name: p-cresol
+   log10_conc: -3
+   glomerulus: VC2
+   abbrev: p-cre
+   inventory: NA-2
+   cid: 2879
+
+ # TODO try to find replacement (phenyl ethyl alcohol? or was that also for VC2?)
+ # Was solid/gel at room temp, and behind a septum. Hard to work with.
+ #- name: o-cresol
+ #  # Guessing somewhat
+ #  log10_conc: -3
+ #  glomerulus: VA5
+ #  abbrev: o-cre
+ #  inventory: NA-3
+
+ # TODO try in water. maybe it works there?
+ # Also tried -3. Was somewhat broad then but still no apparent VM3 activation.
+ #- name: butyric acid
+ #  log10_conc: -4
+ #  glomerulus: VM3
+ #  abbrev: bacid
+ #  inventory: A-6
+
+ # Bit messy
+ - name: acetophenone
+   log10_conc: -4
+   glomerulus: VA3
+   abbrev: aphe
+   inventory: O-51
+   cid: 7410
+
+ - name: ethyl lactate
+   log10_conc: -7
+   glomerulus: VC4
+   abbrev: elac
+   inventory: F-6
+   cid: 7344
+
+ - name: 1-hexanol
+   log10_conc: -6
+   glomerulus: VC3
+   abbrev: 6ol
+   inventory: F-28
+   # matches Remy's megamat CID
+   cid: 8103
+
+ - name: phenylacetaldehyde
+   log10_conc: -5
+   glomerulus: VL2a
+   abbrev: paa
+   # I think I've been using 4-7
+   inventory: 4-6, 4-7
+   # matches Remy's validation2 CID
+   cid: 998
+
+ # Could just use carene for these. It activates both DC1 and VC1, and at least for all
+ # the diagnostic test experiments (w/ plane spacing of 8-10 uM), there was always at
+ # least a plane separating those two.
+ #
+ # TODO try dropping this one. might wanna try analysis first (and at 12uM spacing),
+ # to double check not useful
+ - name: fenchone
+   log10_conc: -5
+   glomerulus: VC1
+   abbrev: fench
+   inventory: F-2
+   # from searching CAS 7787-20-4 (from Sigma product I ordered)
+   cid: 82229
+
+# TODO TODO try to find diagnostics for:
+# - VA4
+# - VA5
+
+# Possible diagnostics to add:
+# - DA1
+#   - cVA
+#   (not sure if there is literally anything else DA1 responds to though.
+#   probably fine to leave out)
+#   - why does badel report activation by several other odors (3-oct, eb, 2,3-b, etc)?
+#     ephaptic? error?
+#
+# - VA4 (Or85d)
+#   - phenylethyl acetate (Grabe 2016 S3)?
+#   - phenylethyl propionate (Grabe 2016 S3)?
+#   - benzyl acetate (Grabe 2016 S3)?
+#   - 4-phenyl-2-butanol (Grabe 2016 S3)?
+#   - ethyl pentanoate (DoOR 2.0 paper. supporting data?)
+#   - linalool (badel)? TODO do i see activation?
+#
+# - VA1v (Or47b)
+#   - methyl laurate (Grabe 2016 S3)? (ordered)
+#   - (S)-(+)-carvone (DoOR 2.0 paper. supporting data?)
+#
+# - VA1d (Or47b)
+#   - methyl palmitate (Grabe 2016 S3)?
+#   - methyl myristate (Grabe 2016 S3)?
+#
+# - VA7l (Or46a)
+#   - phenol (Grabe 2016 S3)?
+#     - VA4 should be ruled out by this, according to Grabe data
+#       (want to rule out VA5 though...)
+#   - methyl benzoate (Grabe 2016 S3)?
+#     - VA4 should be ruled out by this, according to Grabe data
+#       (want to rule out VA5 though...)
+#   - should also respond to p-cresol
+#   - cyclohexanone
+#     - according to Marshall.2010.WT dataset as shown in DoOR, this should help
+#       distinguish from VA5 (Or49b)
+#
+# - VA7m (receptor unclear)
+#   - 2-oxovaleric acid / ethyl acetate (diff response wrt. VA7l) (badel) (ordered)
+#
+# - VM7v (Or59c)
+#   - ethyl benzoate (Grabe 2016 S3)?
+#   - ethyl butyrate (DoOR 2.0 paper. supporting data?)
+#
+# - VM5v (Or98a)
+#   - methyl / ethyl benzoate (Hallem)
+#
+# - VL2p (Ir31a)
+#   - 2-oxovaleric acid (DoOR 2.0 paper. Silbering table.) (ordered)
+#
+# - VM3 (Or9a)
+#   - 3-hydroxy-2-butanone (DoOR 2.0 paper. supporting data?)
+#   - 2-pentanol (source?)?
+#
+# - VL1 (Ir75d)
+#   - pyrrolidine (DoOR 2.0 paper. Silbering table.) (ordered)
+# - VM1 (Ir92a)
+#   - is this the one we used to try to get w/ ammonia (that was VM4 I think?)?
+#   - should also respond to dimethylamine according to DoOR 2.0 paper...
+#   - dimethylamine/ammonia according to Silbering
+#
+# - VM4 (Ir76a)
+#   - ammonium hydroxide (DoOR 2.0 paper. supporting data?)
+#   - phenylethylamine (Silbering table)
+#
+# - DP1l (Ir75a)
+#   - acetic acid (DoOR 2.0 paper. Silbering table.)
+#     - TODO do i see this? specific?
+#   - propionic acid (Silbering table)?
+#
+# - VC5 (Ir41a)
+#   - putrescene (DoOR 2.0 paper. silbering)
+#   - spermidine? might be similarly selective, and maybe less unpleasant to work with
+#     compared to putrescene? (silbering) (ordered)
+#
+# - VC2 (Or71a)
+#   - 4-ethylguaiacol (DoOR 2.0 paper. supporting data?)
+#
+# - DL2d/v (d=Ir75b,  v=Ir75c)
+#   - propanal (both?) (DoOR 2.0 paper. supporting data?)
+#   - butyric acid?
+#
+# - V
+#   - CO2
+#
+# - DL4
+#   - this paper mentions 3 possible chemicals BUT they synthesized all of them...
+#     https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.1002318
+#     can't seem to buy any of them (iridomyrmecin, actinidine, and nepetalactol).
+#     (parasitic wasp pheromone paper)
+#
+#   - nepetalactol may be the active ingredient in catnip though, so maybe a catnip
+#     dilution / extract could work?
+#
+#   - guaicol (remy's validation2 panel) seemed to activate this specifically in 1-2
+#     flies, but unclear if consistent, and also a bit uncertain it was even DL4
+#     (as i have nothing other than position really)

@@ -1,0 +1,9 @@
+{
+ "exclude_last_pre_odor_frame": false,
+ "median_for_baseline": false,
+ "n_volumes_for_baseline": null,
+ "n_volumes_for_response": 2,
+ "one_baseline_per_odor": false,
+ "response_stat_fn_name": "sign_preserving_maxabs",
+ "zscore_traces_per_recording": false
+}
