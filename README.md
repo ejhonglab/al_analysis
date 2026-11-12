@@ -1,43 +1,64 @@
 
-### Installation
+Analysis of antennal lobe (AL) 2-photon imaging data from the Hong lab: the `al-analysis`
+command processes ThorImage / ThorSync recordings into ORN / PN glomerulus responses and
+plots, and `plot-roi` and `csvinfo` view ROIs and response tables. With the optional
+`model` extra, `al-analysis` also runs the mushroom body model (pyolfsysm, in the
+[olfsysm](https://github.com/ejhonglab/olfsysm) repository) on those responses.
 
-```
-mkdir -p ~/src
-cd ~/src
 
-git clone https://github.com/ejhonglab/al_analysis
-cd al_analysis
+### Installation (from scratch)
 
-# This will make a conda environment named 'al_analysis'
-conda env create -f environment.yml
-conda activate al_analysis
-```
+These steps make a new environment (a venv, in `al_analysis/venv`). Installs made before
+2026-11, when the model moved to olfsysm, should be replaced this way rather than updated:
+delete the old `venv` directory (or conda environment) first.
 
-If instead using a venv made from the system Python, first install a C++ compiler and
-the Python headers (needed to build the olfsysm C++ extension), with the `-dev` package
-matching the Python version the venv is made with:
-```
-sudo apt install build-essential python3.14-dev
-python3.14 -m venv venv
-source venv/bin/activate
-pip install -e .
-```
+1. Python 3.14 with its `venv` module (on Ubuntu releases that do not package it, from the
+   deadsnakes PPA), and git:
+   ```
+   sudo apt install python3.14 python3.14-venv git
+   ```
+
+2. Get the code and make the venv:
+   ```
+   mkdir -p ~/src
+   cd ~/src
+   git clone https://github.com/ejhonglab/al_analysis
+   cd al_analysis
+   python3.14 -m venv venv
+   ```
+
+3. Install, either
+   - without the model (the AL analysis only: `al-analysis`, whose model step is skipped
+     by default, `plot-roi` and `csvinfo`):
+     ```
+     ./venv/bin/pip install -e .
+     ```
+   - or with the model (also the `al-analysis` model step, `al_analysis.mb_model`, and
+     the model's `plot-dynamics` and `step_model_pn_apl` commands). This builds the
+     olfsysm C++ extension, so it also needs a C++ compiler and the Python headers:
+     ```
+     sudo apt install build-essential python3.14-dev
+     ./venv/bin/pip install -e '.[model]'
+     ```
+   Without the model, the model step of `al-analysis` (`-s` without `model`) and
+   `al_analysis.mb_model` stop with an error saying to install `al_analysis[model]`.
+
+4. Run the commands from the venv (`./venv/bin/al-analysis -h`), or activate it first
+   (`source venv/bin/activate`).
+
+Python 3.8 (with pandas 1.5) is also supported: make the venv with `python3.8`, then
+`./venv/bin/pip install -r exact-requirements-py38.txt` (which includes the model) and
+`./venv/bin/pip install --no-deps -e .`.
 
 
 ### Updating
 
 ```
 cd ~/src/al_analysis
-
-# activate whatever conda/venv/etc environment you installed al_analysis into,
-# if it is not a conda environment named 'al_analysis'
-conda activate al_analysis
-
-# this should install requirements specified in exact-requirements.txt, via a reference
-# to that file in pyproject.toml. this `pip install .` command is also the only command
-# or requirement specified in the environment.yml file (other than specifying the python
-# version to [currently] 3.8.12)
-pip install .
+git pull
+# installs requirements specified in exact-requirements.txt (via a reference to that file
+# in pyproject.toml); add [model] as above if it was installed with the model
+./venv/bin/pip install -e .
 ```
 
 
@@ -143,27 +164,16 @@ TODO (+ explain how to setup ImageJ stuff and hotkeys for it, or link to repo th
 explains that)
 
 
-### Model provenance (olfsysm builds)
+### The model
 
-Every model run (`mb_model.fit_mb_model`) first checks that the installed `olfsysm`
-extension is a clean build of a known commit: olfsysm bakes its git hash, a clean / dirty
-flag and a hash of its compiled sources into the module at build time, and
-`mb_model.olfsysm_is_clean()` also compares the build with the checkout it was installed
-from (`mb_model.olfsysm_build_info()` / `olfsysm_checkout_info()` show the details). If the
-check fails, the error says why and how to proceed: commit (or stash) the olfsysm changes
-and rebuild with `pip install -e ~/src/olfsysm`, or, for development only,
-```
-export AL_ANALYSIS_ALLOW_DIRTY_OLFSYSM=1
-```
-to run anyway. `mb_model.model_provenance()` collects the olfsysm build info, the commit
-and dirty state (with diff) of `al_analysis` and `hong2p`, the CPU, Python and package
-versions, and content hashes of the model inputs; `fit_and_plot_mb_model` writes it as
-`model_provenance.json` next to each output's parameter files, and the KC-remapping
-experiment scripts include it in their `provenance.json`. The KC-remapping experiment harness
-(ejhonglab/model_experiment_queue since 2026-11-11) and `test/generate_reference_outputs_for_repro.py`
-always require a clean build (the environment variable is ignored there). The repro tests
-in `test/test_mb_model.py` do not compare any of this: they check that behavior did not
-change across versions.
+The model step of `al-analysis` runs pyolfsysm's `model_mb_responses`.
+`al_analysis.mb_model` and `al_analysis.wpnkc_shuffles` forward to `pyolfsysm.mb_model` and
+`pyolfsysm.wpnkc_shuffles`, and al_util's model-only names (Remy's KC data loaders,
+`load_*_dff`, ...) to `pyolfsysm.util`, so older code importing them from al_analysis
+still works; new code should import pyolfsysm. The model's data, scripts and tests, its
+clean-build check (every model run first checks the installed olfsysm build) and the
+provenance it records with each output are documented in olfsysm's README.
+
 
 ### Installation notes
 
@@ -171,3 +181,20 @@ Initially tested on Ubuntu 18.04, mostly on 20.04, and also believe it has worke
 least 24.04 (not sure if I've tested 26.04 yet). Some things, like symbolic links, may
 not work as expected by default on Windows.
 
+
+### Development
+
+To work on hong2p or olfsysm (the model) alongside this, clone them next to this
+checkout and install them editable into this venv, after al_analysis (which installs them
+from GitHub):
+```
+./venv/bin/pip install -e '.[model,dev]'
+./venv/bin/pip install -e ../hong2p[all]
+./venv/bin/pip install -e ../olfsysm
+```
+
+Tests (`QUICK=1` skips the slowest cases; the model's tests, including those of the
+olfsysm C++ code, are in olfsysm's `test/`, since 2026-11):
+```
+QUICK=1 ./venv/bin/python -m pytest
+```

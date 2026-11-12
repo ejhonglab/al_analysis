@@ -20,6 +20,22 @@ dynamic = ["dependencies"]
 readme = "README.md"
 
 [project.optional-dependencies]
+# The MB model (the `al-analysis` model step, `-s` without 'model'; al_analysis.mb_model):
+# pyolfsysm, in the olfsysm repository since 2026-11, and the model-only dependencies (the
+# rest of the dependencies are in exact-requirements.txt). Pinned for the newer python, as
+# exact-requirements.txt is (exact-requirements-py38.txt has them for python 3.8).
+model = [
+    "olfsysm @ git+https://github.com/ejhonglab/olfsysm",
+    "rastermap==1.0",
+    "numba==0.68.0",
+    "llvmlite==0.50.0",
+    "natsort==8.4.0",
+    "statsmodels==0.15.0",
+    "patsy==1.0.3",
+    "formulaic==1.2.2",
+    "interface_meta==2.0.1",
+    "wrapt==2.5.1",
+]
 dev = [
     # NOTE: keep >= pytest minversion below
     "pytest >= 8.3.5",
@@ -37,7 +53,8 @@ packages = ["al_analysis"]
     # other way to change name of package this is under, or directly provide the module
     # w/o a containing package?
     # TODO could consolidate all scripts / CLI entrypoints in one dir?
-py-modules = ["scripts.step_model_pn_apl"]
+# (scripts.step_model_pn_apl was the one py-module here, until it moved to olfsysm, as
+# pyolfsysm.step_model_pn_apl, with its `step_model_pn_apl` command, 2026-11)
 #]
 include-package-data = true
 
@@ -63,16 +80,8 @@ csvinfo = "al_analysis.load_antennal_csv:csvinfo_cli"
 # TODO delete?
 #csvdiff = "al_analysis.load_antennal_csv:csvdiff_cli"
 
-plot-dynamics = "al_analysis.mb_model:load_and_plot_dynamics_cli"
-
-# doesn't seem we need an __init__.py in scripts/ or anything
-# ah, but just b/c pip completed the install (w/o 'scripts.' prefix here), doesn't mean
-# this will run. script it generated seems to be garbage (though i didn't try running
-# it...). now that i've added scripts.step_model_pn_apl to modules list above, should
-# work, although don't love the global 'scripts' package name.
-# DO need the "scripts." prefix, despite "scripts.step_model_pn_apl" being listed in
-# py-modules above
-step_model_pn_apl = "scripts.step_model_pn_apl:main"
+# (the model's `plot-dynamics` and `step_model_pn_apl` commands are olfsysm's, since
+# 2026-11: installed with the `model` extra)
 
 [tool.pytest.ini_options]
 # TODO `minversion = "6.0"` (or whichever version. using 8.3.5, but prob doesn't
