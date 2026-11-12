@@ -1182,10 +1182,11 @@ def permuted_factors(factors: pd.DataFrame, seed: int) -> pd.DataFrame:
     return out
 
 
-def _d_plan(arm: str, controls: bool) -> List[Tuple[str, str, float, str, Optional[int]]]:
-    """[(change, half, size, wiring, control seed)] of part D for an arm."""
+def _d_plan(arm: str, controls: bool, halves: Sequence[str] = ('A', 'B')
+            ) -> List[Tuple[str, str, float, str, Optional[int]]]:
+    """[(change, half, size, wiring, control seed)] of part D for an arm (`halves`: whose searched changes)."""
     plan = []
-    for X in ('A', 'B'):
+    for X in halves:
         for size, ws in ((GATE_SIZE, ALL_WIRINGS), (1.0, T_WIRINGS)):
             plan += [(f'D{arm}_half{X}_s{size:g}', X, size, w, None) for w in ws]
         if controls:
@@ -1194,17 +1195,18 @@ def _d_plan(arm: str, controls: bool) -> List[Tuple[str, str, float, str, Option
     return plan
 
 
-def run_part_d(out: Path, arm: str, controls: bool = False) -> pd.DataFrame:
+def run_part_d(out: Path, arm: str, controls: bool = False, halves: Sequence[str] = ('A', 'B')) -> pd.DataFrame:
     """Part D's simulations for an arm (resumable; runs_D<arm>.csv, outputs under outputs/.../D<arm>/): arm P, the
     searched scores at the size on each wiring's WiringModel, the APL scale re-bisected; arm I, the input at the size,
-    breadth recomputed, both rates re-held. With `controls`, also the label-permuted controls on T at GATE_SIZE."""
+    breadth recomputed, both rates re-held. With `controls`, also the label-permuted controls on T at GATE_SIZE. `halves`
+    limits the runs to those halves' searched changes (one half's search can be read while the other's still runs)."""
     import gc
     import hashlib
     import json
     part = f'D{arm}'
     rp, pp = out / f'runs_{part}.csv', out / f'provenance_{part}.json'
     done = set(_read_rows(rp).get('tag', pd.Series(dtype=str)))
-    plan = [x for x in _d_plan(arm, controls) if f'{x[0]}_{x[3]}' not in done]
+    plan = [x for x in _d_plan(arm, controls, halves) if f'{x[0]}_{x[3]}' not in done]
     by_wiring: Dict[str, list] = {}
     for x in plan:
         by_wiring.setdefault(x[3], []).append(x)
@@ -1431,7 +1433,8 @@ def part_d(out: Path, arm: str, controls: Optional[bool] = None) -> pd.DataFrame
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--part', required=True, choices=['identity', 'A1', 'A2', 'A-score', 'B', 'C', 'D', 'E'])
-    ap.add_argument('--half', choices=['A', 'B'], help='parts B and C: the half of the recordings searched against')
+    ap.add_argument('--half', choices=['A', 'B'], help='parts B and C: the half of the recordings searched against; part '
+                    "D: run only that half's searched change on the wirings (no tables; the full --part D reuses the runs)")
     ap.add_argument('--arm', choices=['P', 'I'], help='part D: the arm read')
     ap.add_argument('--wirings', nargs='+', default=list(ALL_WIRINGS), help='part A1: the wirings to run')
     ap.add_argument('--no-wiring-checks', action='store_true',
@@ -1454,7 +1457,10 @@ def main() -> None:
     elif args.part == 'D':
         if args.arm is None:
             ap.error('--part D needs --arm P or I')
-        part_d(out, args.arm)
+        if args.half is not None:
+            run_part_d(out, args.arm, halves=(args.half,))
+        else:
+            part_d(out, args.arm)
     else:
         raise NotImplementedError(f'part {args.part}')
 
