@@ -12,8 +12,9 @@ flies of `2p_data/analysis_intermediates`: 2023-05-08/1 (5 recordings, 100 outli
 The measuring was done with hong-data's `app/extract.py` (the odor response database's
 *Extract signals*), which reproduces this calculation exactly: for 9 recordings of 4 flies,
 every trace in `full_traces`, every plane chosen in `best_plane_traces` and every response
-in `ij_trial_df_cache` came out identical to the last bit. The script that made the numbers
-is `notes/trace_extraction_flaws.py` in hong-data (a copy of this note is beside it).
+in `ij_trial_df_cache` came out identical to the last bit. The scripts that made the numbers
+are `notes/trace_extraction_flaws.py` and `notes/trace_extraction_baseline.py` (finding 4)
+in hong-data (a copy of this note is beside them).
 
 ## Summary
 
@@ -22,7 +23,7 @@ is `notes/trace_extraction_flaws.py` in hong-data (a copy of this note is beside
 | 1 | A glomerulus' plane is chosen separately in each recording | `ij_traces` | 74–85% of multi-plane ROIs change plane between a fly's recordings; single ROIs' responses 0.33× to 1.75× | measured |
 | 2 | The plane is chosen by one signed maximum | `ij_traces`: `roi_quality = trial_dff.max()` | one trial decides; an ROI that is only inhibited gets the plane that responds least | read in the code |
 | 3 | Masks are half a pixel off ImageJ's, and depend on which way round an outline was drawn | hong2p `ijroi2mask` | 9% of an outline's pixels differ; responses over 0.2 differ by about 1% (median) | measured |
-| 4 | F0 is the mean of very few time points | `delta_f_over_f`, and how trials are cut | 4–5 time points in the 2023-05 fly, 2–3 in the later two | measured |
+| 4 | F0 is the mean of very few time points (a deliberate choice, not a bug) | `delta_f_over_f`; imaging is triggered per trial | 2–5 volumes; no bias; another baseline could cut a response's s.d. between repeats by 11–16% at most | measured |
 | 5 | The ±peak statistic is biased away from zero | `sign_preserving_maxabs` | no odor: mean magnitude 0.063, against 0.037 for the mean of the same two time points | measured (one fly) |
 | 6 | Two time points do not always hold the peak | `n_volumes_for_response = 2` | 86–95% of strong responses peak in them; for 4–10% they hold under 80% of the peak | measured |
 | 7 | The plane is chosen by the responses then reported | `ij_traces` | adds 2–5% to an ROI's largest response | measured |
@@ -96,22 +97,43 @@ pixel off the outlines. It changes every mask a little, so every cached trace. a
 rasterizes the same outlines with scikit-image's `draw.polygon`, a third rule: if this is
 fixed, make it the same there.
 
-## 4. F0 is the mean of very few time points
+## 4. F0 is the mean of very few time points (a deliberate choice, and a small cost)
 
 `delta_f_over_f` (`al_analysis.py:2374`) takes F0 as the mean of all of a trial's time
-points before the odor (`n_volumes_for_baseline = None`, line 303). A trial starts where
-the one before ends, so that is all there is: 4 or 5 time points in the 2023-05-08 fly, and
-2 or 3 in the two later flies. With 2, the noise of F0 adds half again to the variance of a
-response taken from one time point.
+points before the odor (`n_volumes_for_baseline = None`, line 303). Imaging is triggered
+by the stimulus, a block per trial (`stimulusTriggering="1"` in the recordings'
+`Experiment.xml`), so those are all the time points there are next to the odor: 4 or 5
+volumes in the 2023-05-08 fly (6 to 7.5 s, at 0.67 volumes/s), and 2 or 3 in the two later
+flies (4.5 to 6.8 s, at 0.44 volumes/s). The time points before a trial's `start_frame` are
+the end of the block before, across the time between trials when nothing was imaged.
 
-This is of how trials are cut (`assign_frames_to_odor_presentations`), not of
-`n_volumes_for_baseline`: a longer baseline would have to reach back into the trial before.
-What is left of the response before does not bias it: after a response over 0.5, F0 over
-all the time points is within 0.4% (median; +3% at the 90th percentile) of F0 over the last
-two alone.
+This is not a bug. It is the same calculation for every trial, the first included; it
+assumes nothing about how fast a response decays or how long imaging goes on after an odor;
+and the response is itself of one or two volumes. It is here for what it costs, which is
+noise and not bias, and that is small:
 
-*A fix:* let a trial's baseline start earlier than its `start_frame`, where the trial before
-has decayed; or record more time before each odor.
+- **The noise it adds.** One time point's noise is 4 to 5.5% of F0 (median over ROIs). The
+  variance of a response R read from one time point is about σ²(1 + (1 + R)² / n) with n
+  time points in F0: 1.5 σ² for a small response at n = 2, 3 σ² at R = 1.
+- **The most another baseline could gain.** With F0 replaced by the median of five
+  neighbouring trials' F0, the s.d. of a response between an odor's repeats (responses over
+  0.3; their median 0.56) falls from 0.069 to 0.120 (by fly) to 0.056 to 0.100: by 11 to
+  16%. With each trial's own F0 still subtracted, and only the division by that median: 7
+  to 8%. The rest of the variation between repeats is not the baseline's.
+- **A trial's own F0 follows something real.** F0 moves between successive trials with 1.4
+  to 1.6× the variance its noise alone would give (2 to 4× over a whole recording, whose
+  last three trials' F0 are 0.91 to 1.08 of its first three's), so a baseline pooled over
+  trials would trade this noise for a bias.
+- **No bias.** After a response over 0.5, F0 over all of a trial's time points is within
+  0.4% (median; +3% at the 90th percentile) of F0 over its last two. The last two time
+  points of the block before are within 0.2% (median; 0.6% after a response over 0.5) of
+  the next trial's F0, with a spread (4.9 to 6.6%) a little over what noise alone would give
+  (4.2 to 5.0%): the response before has decayed by the end of its block, but assuming so
+  buys only two more time points, and none for the first trial.
+
+*If more precision is ever wanted:* image one or two more volumes before each odor (the
+term is 1 / n). In analysis alone the gain is the 7 to 8% above, from dividing by an F0
+smoothed over neighbouring trials while still subtracting the trial's own.
 
 ## 5. The ±peak statistic is biased away from zero
 
@@ -134,8 +156,9 @@ same statistic on time points without odor.
 their trial, 86 to 95% peak in the first two time points from onset and 3 to 9% later than
 the third; for 4 to 10% of them the first two hold under 80% of the peak.
 
-The comment there asks for the window in seconds. The motion-corrected TIFFs do not say
-their volume rate (no `finterval`), so that was not checked.
+The comment there asks for the window in seconds: two volumes are 3.0 s in the 2023-05-08
+fly (0.67 volumes/s) and 4.5 s in the two later ones (0.44 volumes/s, 11 planes), by their
+`Experiment.xml`. With the slower volumes, more peaks fall in the first time point.
 
 ## 7. The plane is chosen by the responses then reported
 
@@ -188,6 +211,11 @@ changes exactly these later, under a TODO to correct `odor2abbrev` instead.
 | Largest response on the chosen plane over the planes' mean: trials chosen by; others | 1.13; 1.11 | 1.16; 1.11 | 1.15; 1.10 |
 | Peak at time point 0; 1; 2; later (responses passing 0.3) | 36%; 50%; 5%; 9% | 52%; 43%; 1%; 3% | 48%; 43%; 2%; 8% |
 | First two time points hold under 80% of the peak | 10% | 4% | 8% |
+| Volumes per second (planes) | 0.67 (8) | 0.44 (11) | 0.44 (11) |
 | Time points before the odor | 4 or 5 | 2 or 3 | 2 or 3 |
 | F0 over all of them against the last two, after a response over 0.5 (median; 90th percentile) | −0.2%; +2.8% | −0.3%; +2.8% | −0.4%; +3.2% |
+| Noise of one time point, of F0 (median over ROIs) | 4.1% | 4.6% | 5.5% |
+| Variance of F0 over what its noise would give: between successive trials; over a recording | 1.6×; 4.1× | 1.4×; 2.2× | 1.5×; 2.0× |
+| The last two time points of the block before, against the next F0 (median; after a response over 0.5) | −0.1%; −0.5% | −0.1%; −0.6% | −0.2%; −0.6% |
+| S.d. of a response between repeats: own F0; median F0 of 5 trials; own subtracted, median divided by | 0.069; 0.056; 0.060 | 0.102; 0.087; 0.093 | 0.120; 0.100; 0.103 |
 | No odor: ±peak of two time points (s.d.; mean magnitude) against their mean | 0.090; 0.063 against 0.058; 0.037 | too few time points | too few time points |
