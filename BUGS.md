@@ -23,7 +23,7 @@ in hong-data (a copy of this note is beside them).
 | 1 | A glomerulus' plane is chosen separately in each recording | `ij_traces` | 74–85% of multi-plane ROIs change plane between a fly's recordings; single ROIs' responses 0.33× to 1.75× | measured |
 | 2 | The plane is chosen by one signed maximum | `ij_traces`: `roi_quality = trial_dff.max()` | one trial decides; an ROI that is only inhibited gets the plane that responds least | read in the code |
 | 3 | Masks are half a pixel off ImageJ's, and depend on which way round an outline was drawn | hong2p `ijroi2mask` | 9% of an outline's pixels differ; responses over 0.2 differ by about 1% (median) | measured |
-| 4 | F0 is the mean of very few time points (a deliberate choice, not a bug) | `delta_f_over_f`; imaging is triggered per trial | 2–5 volumes; no bias; another baseline could cut a response's s.d. between repeats by 11–16% at most | measured |
+| 4 | F0 is the mean of very few time points (a deliberate choice, not a bug) | `delta_f_over_f`; imaging is triggered per trial | 2–5 volumes; no bias; another baseline could cut a response's s.d. between repeats by 11–16% at most, and only by assuming F0 steady from trial to trial, which it is not | measured |
 | 5 | The ±peak statistic is biased away from zero | `sign_preserving_maxabs` | no odor: mean magnitude 0.063, against 0.037 for the mean of the same two time points | measured (one fly) |
 | 6 | Two time points do not always hold the peak | `n_volumes_for_response = 2` | 86–95% of strong responses peak in them; for 4–10% they hold under 80% of the peak | measured |
 | 7 | The plane is chosen by the responses then reported | `ij_traces` | adds 2–5% to an ROI's largest response | measured |
@@ -132,8 +132,12 @@ noise and not bias, and that is small:
   buys only two more time points, and none for the first trial.
 
 *If more precision is ever wanted:* image one or two more volumes before each odor (the
-term is 1 / n). In analysis alone the gain is the 7 to 8% above, from dividing by an F0
-smoothed over neighbouring trials while still subtracting the trial's own.
+term is 1 / n). Nothing in analysis is worth doing. The 7 to 8% and 11 to 16% above come
+from an F0 smoothed over neighbouring trials, which assumes F0's scale does not jump from
+one block to the next. It can (the scope is off between blocks: drift in z, motion,
+bleaching and its recovery), and it does: for a tenth of the ROIs, F0's variance between
+successive trials is over 3× what its noise would give. Those medians are over ROIs whose
+F0 is mostly steady; where it jumps, a smoothed F0 is wrong by the jump.
 
 ## 5. The ±peak statistic is biased away from zero
 
