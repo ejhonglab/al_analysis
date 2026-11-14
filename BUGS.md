@@ -107,10 +107,14 @@ points before the odor (`n_volumes_for_baseline = None`, line 303). A trial star
 before its odor as the recording ran before its first odor
 (`assign_frames_to_odor_presentations`): 6.9 s, the stimulus' `pre_pulse_us` of 7 s. That
 is 4 or 5 volumes in the 2023-05-08 fly (0.67 volumes/s), and 2 or 3 in the two later flies
-(0.44 volumes/s). Imaging runs on through a recording (one acquisition for all of its
-trials, by its ThorSync data), so the time points before a trial's `start_frame` are the
-end of the trial before: 17 to 20 s after its 3 s pulse where a trial is 30 s, but 2.5 to
-7 s after it in the later flies' diagnostic recordings, whose trials are 17 s.
+(0.44 volumes/s). In these recordings, as in all of Tom's, imaging runs on through a
+recording (one acquisition for all of its trials, by its ThorSync data; two of Sam's that
+were looked at are so too), so the time points before a trial's `start_frame` are the end
+of the trial before: 17 to 20 s after its 3 s pulse where a trial is 30 s, but 2.5 to 7 s
+after it in the later flies' diagnostic recordings, whose trials are 17 s. Other people's
+recordings may be acquired in blocks, imaging stopped between them; hong2p then gives each
+trial of a block the time that block ran before its first odor, and what is before a block
+is not next to it in time at all.
 
 This is not a bug. Every trial gets the baseline the first one has, which has nothing
 before it; nothing is assumed about how fast a response decays or how long imaging goes on
@@ -305,3 +309,7 @@ are not al_analysis' final outputs.
   differ. Those checked had 2 to 5.
 - **Movies that are not 16-bit integers** were checked against al_analysis' steps written
   out (hong-data's tests), not against its own outputs: all nine recordings were `uint16`.
+- **Recordings acquired in several blocks** (imaging stopped between trials, or between
+  groups of them). Nothing in the extraction assumes one continuous acquisition: it takes
+  each trial's frames as al_analysis' `trial_frames_and_odors.json` gives them, and uses no
+  time point outside a trial. But every recording checked was one acquisition.
