@@ -31,10 +31,13 @@ responses then reported; masks are half a pixel off ImageJ's and depend on the d
 outline was drawn in; F0 is the mean of 2 to 5 time points (deliberate: every trial gets
 the 7 s before its odor that the first one has; a small cost in noise, not a bug); the
 ±peak statistic is biased away from zero; the two-volume window misses some peaks, and at
-0.67 volumes/s can leave out a volume the 3 s pulse reaches into; no background is
-subtracted; odor
-abbreviations depend on hong2p's cache. Remind me of the items that bear on what I ask for
+0.67 volumes/s can leave out a volume the 3 s pulse reaches into (a longer pulse, more:
+the window that holds a pulse is floor(pulse / volume + 1/2) + 1 volumes, which hong-data
+takes by default); no background is subtracted; odor
+abbreviations depend on hong2p's cache. It also records that the frames assigned to each
+odor were checked against ThorSync across years, rigs and ThorImage versions, and were
+consistent. Remind me of the items that bear on what I ask for
 whenever a request touches that code or interprets its outputs (response sizes, inhibition,
 comparisons across a fly's recordings), before doing the work. When one is fixed, update
 BUGS.md, and say that hong-data's `app/extract.py` (which reproduces the current numbers
-exactly, and is tested to) must change with it.
+exactly with its response window set to 2 volumes, and is tested to) must change with it.

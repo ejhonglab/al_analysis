@@ -10,14 +10,17 @@ Found by reading the code (al_analysis 478b56b, hong2p ae2abda), then measured o
 flies of `2p_data/analysis_intermediates`: 2023-05-08/1 (5 recordings, 100 outlines),
 2023-11-21/2 (6 recordings, 97 outlines) and 2024-01-05/1 (6 recordings, 117 outlines).
 The measuring was done with hong-data's `app/extract.py` (the odor response database's
-*Extract signals*), which reproduces this calculation exactly: for 9 recordings of 4 flies,
+*Extract signals*), which reproduces this calculation exactly (with its response window
+set to the two volumes taken here): for 9 recordings of 4 flies,
 every trace in `full_traces`, every plane chosen in `best_plane_traces` and every response
 in `ij_trial_df_cache` came out identical to the last bit (where it differs from
 al_analysis otherwise, in labels and in what it takes and leaves undone, is the last
 section here). The scripts that made the numbers
-are `notes/trace_extraction_flaws.py`, `notes/trace_extraction_baseline.py` (finding 4) and
+are `notes/trace_extraction_flaws.py`, `notes/trace_extraction_baseline.py` (finding 4),
 `notes/trace_extraction_thorsync.py` (when imaging ran and the odor valve opened, from a
-recording's ThorSync data) in hong-data (a copy of this note is beside them).
+recording's ThorSync data), `notes/trace_extraction_odor_frames.py` and
+`notes/trace_extraction_thorsync_lines.py` (the frames assigned to each odor, against
+ThorSync: the section before the last) in hong-data (a copy of this note is beside them).
 
 ## Summary
 
@@ -178,6 +181,19 @@ flies two volumes are 4.5 s (0.44 volumes/s, 11 planes), and always hold the pul
 the slower volumes, more peaks fall in the first time point. A pulse longer than about
 3.4 s could outlast the window at the slower rate too.
 
+In ThorSync (the section on frames, below), the 3 s pulse reached a third volume in 11 and
+13 of 30 trials of two recordings at 0.67 volumes/s, and in 7 of 30 at 0.57 (Sam's,
+2026-11-06). Sam's recordings of that day with 5 s pulses can reach a fourth, by their
+lengths (their ThorSync data was not read).
+
+*A fix:* take the window from the recording, not a constant: as many volumes as its pulse
+can reach, floor(pulse / volume + 1/2) + 1 (3 for 3 s at 0.67 volumes/s, 2 at 0.44, 4 for
+5 s at 0.57), from the stimulus YAML's `pulse_us` and the volume rate, both of which are
+loaded here already. It was the most volumes any trial's pulse reached in each of the
+twelve recordings checked. *Extract signals* now does this by default (2 can be set, for
+this calculation's numbers). In the 2023-05-08 fly, 9 to 21% of a recording's responses
+then differ (2 to 9% of those over 0.3), r = 0.97 to 0.99 with those of two volumes.
+
 ## 7. The plane is chosen by the responses then reported
 
 Choosing the plane with the largest response, then reporting that plane's responses,
@@ -238,9 +254,83 @@ changes exactly these later, under a TODO to correct `odor2abbrev` instead.
 | S.d. of a response between repeats: own F0; median F0 of 5 trials; own subtracted, median divided by | 0.069; 0.056; 0.060 | 0.102; 0.087; 0.093 | 0.120; 0.100; 0.103 |
 | No odor: ±peak of two time points (s.d.; mean magnitude) against their mean | 0.090; 0.063 against 0.058; 0.037 | too few time points | too few time points |
 
+## Which frames are an odor's, checked against ThorSync
+
+Not a finding: a check that came out well. Each trial's frames
+(`trial_frames_and_odors.json`) are from hong2p's `thor.assign_frames_to_odor_presentations`:
+a trial's first odor frame is the first volume whose middle is at or after the valve's
+opening, and it starts as long before that as the recording ran before its first odor.
+Whether that holds across years, rigs and ThorImage versions was looked at on 2026-11-13,
+in the ThorSync data of twelve recordings of 2021 to 2026 (the table below), with
+`notes/trace_extraction_odor_frames.py` of hong-data.
+
+- **The valve's line is `olfDispPin`, and it is analog in every file looked at** (a float
+  from 0 to 4.87–4.93 V): Tom's of 2021 to 2024, Sam's of 2024 and 2026, Remy's of 2022 and
+  2024, Ruoyi's of 2026. Never a digital line. hong2p calls it high over 4.5 V
+  (`ANALOG_0_TO_5V_THRESHOLD`), which is within 0.4 V of the level it is high at: a line
+  that sagged by a tenth would give no pulses at all. Thresholding at the middle of the
+  line's own two levels (its 1st and 99.9th percentiles: about 2.45 V) gives the same
+  pulses, to 0.03 ms at either end, once two things are dropped that the lower threshold
+  also catches: blips of about a millisecond (in three recordings: noise), and pulses of
+  0.90 s about 2 s before imaging begins and just after it ends (in the recordings of 2023
+  and 2024, Tom's and Sam's; under 4.5 V in most, but in two recordings one more pulse
+  than there were trials passed 4.5 V, outside imaging, and hong2p still assigned their
+  frames rightly). So: a pulse is 50 ms or more of the line over the middle of its levels,
+  while imaging.
+- **Other lines differ by rig and year**, and hong2p reads them all: the acquisition's
+  trigger is `scopePin`, analog in 2021 and on Remy's rig, digital from 2022 to 2024, and
+  both (`DI/scopePin` and `AI/scopePin_OLD`) in 2026; ThorImage 4.0.2020.2171 (Remy's rig;
+  all others are 3.0.2016.10131) names lines without spaces (`FrameOut`, `FrameCounter`).
+- **The frames assigned are the same now as then**: hong2p's assignment, run again, gives
+  exactly the frames in al_analysis' `trial_frames_and_odors.json`, in all eight of these
+  recordings that have one (2021 to 2026, Tom's and Sam's).
+- **The first odor frame is where the rule says, everywhere**: from the valve's opening
+  to the middle of the first odor volume is between 0 and 1 volume in every trial of all
+  twelve (0.00 to 1.00), on both rigs and ThorImage versions.
+- **Every recording was one block of imaging**, its trials one after another.
+- **The volume before the first odor volume has the valve opening in it in 40 to 63% of
+  trials** (those where it opens after that volume's middle), and is counted as baseline.
+  It holds almost none of the response: as a share of the response's peak (ROIs responding
+  over 0.5), +0.01 where the valve opened in it and −0.00 where it did not (2023-05-08/1
+  megamat1), +0.03 and +0.01 (2024-01-05/1 diagnostics2), +0.02 and +0.02 (validation2_1),
+  +0.04 and +0.04 (Sam's 2024-06-11/2 diag1). The odor takes longer to reach the fly, and
+  GCaMP to rise, than what is left of that volume.
+- **Pairing ThorImage with ThorSync folders is the fragile part.** `thor.pair_thor_subdirs`
+  fails for a fly with an `anat` recording that has no ThorSync data; the two start times,
+  as hong2p reads them, differ by whole hours for some flies (2022-02-04/1, Sam's
+  2024-06-11/2), so pairing by the nearest start time must ignore whole hours; and Remy's
+  of 2022 could not be paired by time at all (paired by hand).
+
+How many volumes, from the first odor volume on, each trial's pulse has a part in, against
+floor(pulse / volume + 1/2) + 1 (finding 6's fix):
+
+| Recording | Volume (s) | Pulse (s) | Volumes the pulse reaches (trials) | floor(P / V + 1/2) + 1 |
+|---|---|---|---|---|
+| Tom 2021-03-07/1 glomeruli_diagnostics_192 | 1.010 | 1.0 | 1 (13), 2 (11) | 2 |
+| Tom 2022-02-04/1 kiwi_ea_eb_only | 0.950 | 3.0 | 3 (19), 4 (38) | 4 |
+| Tom 2023-05-08/1 diagnostics1 | 1.496 | 3.0 | 2 (19), 3 (11) | 3 |
+| Tom 2023-05-08/1 megamat1 | 1.496 | 3.0 | 2 (17), 3 (13) | 3 |
+| Tom 2024-01-05/1 diagnostics1 | 2.256 | 3.0 | 1 (6), 2 (24) | 2 |
+| Tom 2024-01-05/1 diagnostics2 | 2.256 | 3.0 | 1 (6), 2 (24) | 2 |
+| Tom 2024-01-05/1 validation2_1 | 2.256 | 3.0 | 1 (5), 2 (25) | 2 |
+| Tom 2024-10-01/1 diagnostics1 | 2.730 | 3.0 | 1 (13), 2 (17) | 2 |
+| Tom 2024-10-01/1 diagnostics1_redo | 2.730 | 3.0 | 1 (13), 2 (17) | 2 |
+| Sam 2024-06-11/2 diag1 | 3.003 | 3.0 | 1 (16), 2 (14) | 2 |
+| Sam 2026-11-06/2 diag_2 | 1.742 | 3.0 | 2 (23), 3 (7) | 3 |
+| Remy 2022-09-27/1 unpredictable0 (ThorImage 4.0) | 0.337 | 2.0 | 6 (15), 7 (15) | 7 |
+
+The count by the two lengths is the most any trial reached, in every recording, and the
+other trials reach one fewer (by when in a volume the valve opened). A response window of
+that many volumes holds every volume with odor in it, in every trial.
+
+Reading a recording's ThorSync data took 9 to 142 s (1 to 2 GB each), so hong-data does
+not: it takes the frames from `trial_frames_and_odors.json`, and the window from the
+stimulus YAML and `Experiment.xml`.
+
 ## Where hong-data's Extract signals differs from al_analysis
 
-With its default (each ROI's best plane, chosen in each recording), *Extract signals*
+With its response window set to al_analysis' 2 volumes and its default way to choose a
+plane (each ROI's best plane, chosen in each recording), *Extract signals*
 (`app/extract.py`) gives al_analysis' numbers: every trace, every plane chosen and every
 response was identical, to the last bit, in the 9 recordings checked. It differs in what it
 labels them with, in which recordings and ROIs it takes, and in stopping where
@@ -291,13 +381,28 @@ are not al_analysis' final outputs.
 - **The fly's `responses.csv`** is a table al_analysis does not make: every recording's
   trials one under another, repeats counted through a panel's recordings. Each recording's
   own `responses.csv` is the one laid out as `ij_trial_df`.
-- **Its settings are al_analysis' current defaults, and fixed**: `sign_preserving_maxabs`
-  over 2 volumes, and all of a trial's time points before the odor as its baseline. Not
-  the mean of `-R`, z-scored traces, a median baseline, or one baseline per odor.
+- **Its other settings are al_analysis' current defaults, and fixed**:
+  `sign_preserving_maxabs`, and all of a trial's time points before the odor as its
+  baseline. Not the mean of `-R`, z-scored traces, a median baseline, or one baseline per
+  odor.
 - **suite2p's ROIs** are not extracted, only ImageJ's.
 
 ### By choice
 
+- **The response window is, by default, as many volumes as the recording's odor pulse can
+  reach**, not `n_volumes_for_response = 2`: floor(pulse / volume + 1/2) + 1, the pulse's
+  length from `settings: timing: pulse_us` of the stimulus YAML the recording's ThorImage
+  notes name (looked for in `stimulus_data_files/` above the raw recording, as hong2p
+  does, and in folders of odor YAMLs set in the site's Settings), a volume's from its
+  `Experiment.xml` (planes and flyback frames over the frame rate). Never fewer than 2;
+  and 2, saying why, where either length is not found (no raw data folder known, no YAML
+  in the notes, the YAML not found). So it is al_analysis' window where a pulse reaches two
+  volumes (3 s at 0.44 volumes/s: the flies since late 2023), and longer where it reaches
+  more (3 at 0.67 volumes/s: the 2023-05-08 fly; 4 for the 3 s pulses at 1.05 volumes/s
+  of 2022). The best plane is then chosen by responses over that window too. A number of
+  volumes can be set instead, for every recording: with 2, the numbers are al_analysis'.
+  The site says which window each recording will have before extracting, and each
+  extraction's log, README and `provenance.json` say which it had and from what.
 - The three other ways to make one signal of an ROI's planes (its best plane of the whole
   fly, all of its voxels, its planes weighted by their noise) are not al_analysis'. The
   weighted one's `traces.csv` is of F relative to each plane's mean, not F.
