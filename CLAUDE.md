@@ -21,3 +21,17 @@ current ./venv/ python (should be 3.14 with pandas 3). Do this by either
 asking-for-forgiveness-not-permission (e.g. try/except handling), or explicit checking
 of versions if necessary. If code only exists to support old pandas 1.5 (or other old py
 thon 3.8 stuff), add a comment saying which old thing that part of the code is for.
+
+BUGS.md lists the known bugs and questionable choices in the ROI response calculation
+(`ij_traces`, `compute_trial_stats`, `delta_f_over_f`, `sign_preserving_maxabs`, and
+hong2p's `ijroi_masks` / `ijroi2mask` / `rois2best_planes_only`), each with where it is, how
+much it was measured to matter, and a possible fix. None is fixed yet. In short: an ROI's
+best plane is chosen separately in each recording, by one signed maximum, from the
+responses then reported; masks are half a pixel off ImageJ's and depend on the direction an
+outline was drawn in; F0 is the mean of 2 to 5 time points; the ±peak statistic is biased
+away from zero; the two-volume window misses some peaks; no background is subtracted; odor
+abbreviations depend on hong2p's cache. Remind me of the items that bear on what I ask for
+whenever a request touches that code or interprets its outputs (response sizes, inhibition,
+comparisons across a fly's recordings), before doing the work. When one is fixed, update
+BUGS.md, and say that hong-data's `app/extract.py` (which reproduces the current numbers
+exactly, and is tested to) must change with it.
