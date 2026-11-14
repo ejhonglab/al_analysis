@@ -15,8 +15,9 @@ every trace in `full_traces`, every plane chosen in `best_plane_traces` and ever
 in `ij_trial_df_cache` came out identical to the last bit (where it differs from
 al_analysis otherwise, in labels and in what it takes and leaves undone, is the last
 section here). The scripts that made the numbers
-are `notes/trace_extraction_flaws.py` and `notes/trace_extraction_baseline.py` (finding 4)
-in hong-data (a copy of this note is beside them).
+are `notes/trace_extraction_flaws.py`, `notes/trace_extraction_baseline.py` (finding 4) and
+`notes/trace_extraction_thorsync.py` (when imaging ran and the odor valve opened, from a
+recording's ThorSync data) in hong-data (a copy of this note is beside them).
 
 ## Summary
 
@@ -25,7 +26,7 @@ in hong-data (a copy of this note is beside them).
 | 1 | A glomerulus' plane is chosen separately in each recording | `ij_traces` | 74–85% of multi-plane ROIs change plane between a fly's recordings; single ROIs' responses 0.33× to 1.75× | measured |
 | 2 | The plane is chosen by one signed maximum | `ij_traces`: `roi_quality = trial_dff.max()` | one trial decides; an ROI that is only inhibited gets the plane that responds least | read in the code |
 | 3 | Masks are half a pixel off ImageJ's, and depend on which way round an outline was drawn | hong2p `ijroi2mask` | 9% of an outline's pixels differ; responses over 0.2 differ by about 1% (median) | measured |
-| 4 | F0 is the mean of very few time points (a deliberate choice, not a bug) | `delta_f_over_f`; imaging is triggered per trial | 2–5 volumes; no bias; another baseline could cut a response's s.d. between repeats by 11–16% at most, and only by assuming F0 steady from trial to trial, which it is not | measured |
+| 4 | F0 is the mean of very few time points (a deliberate choice, not a bug) | `delta_f_over_f`; each trial gets the 7 s the first one has | 2–5 volumes; no bias; another baseline could cut a response's s.d. between repeats by 11–16% at most, and only by assuming F0 steady from trial to trial, which it is not | measured |
 | 5 | The ±peak statistic is biased away from zero | `sign_preserving_maxabs` | no odor: mean magnitude 0.063, against 0.037 for the mean of the same two time points | measured (one fly) |
 | 6 | Two time points do not always hold the peak | `n_volumes_for_response = 2` | 86–95% of strong responses peak in them; for 4–10% they hold under 80% of the peak | measured |
 | 7 | The plane is chosen by the responses then reported | `ij_traces` | adds 2–5% to an ROI's largest response | measured |
@@ -102,17 +103,19 @@ fixed, make it the same there.
 ## 4. F0 is the mean of very few time points (a deliberate choice, and a small cost)
 
 `delta_f_over_f` (`al_analysis.py:2374`) takes F0 as the mean of all of a trial's time
-points before the odor (`n_volumes_for_baseline = None`, line 303). Imaging is triggered
-by the stimulus, a block per trial (`stimulusTriggering="1"` in the recordings'
-`Experiment.xml`), so those are all the time points there are next to the odor: 4 or 5
-volumes in the 2023-05-08 fly (6 to 7.5 s, at 0.67 volumes/s), and 2 or 3 in the two later
-flies (4.5 to 6.8 s, at 0.44 volumes/s). The time points before a trial's `start_frame` are
-the end of the block before, across the time between trials when nothing was imaged.
+points before the odor (`n_volumes_for_baseline = None`, line 303). A trial starts as long
+before its odor as the recording ran before its first odor
+(`assign_frames_to_odor_presentations`): 6.9 s, the stimulus' `pre_pulse_us` of 7 s. That
+is 4 or 5 volumes in the 2023-05-08 fly (0.67 volumes/s), and 2 or 3 in the two later flies
+(0.44 volumes/s). Imaging runs on through a recording (one acquisition for all of its
+trials, by its ThorSync data), so the time points before a trial's `start_frame` are the
+end of the trial before: 17 to 20 s after its 3 s pulse where a trial is 30 s, but 2.5 to
+7 s after it in the later flies' diagnostic recordings, whose trials are 17 s.
 
-This is not a bug. It is the same calculation for every trial, the first included; it
-assumes nothing about how fast a response decays or how long imaging goes on after an odor;
-and the response is itself of one or two volumes. It is here for what it costs, which is
-noise and not bias, and that is small:
+This is not a bug. Every trial gets the baseline the first one has, which has nothing
+before it; nothing is assumed about how fast a response decays or how long imaging goes on
+after an odor; and the response is itself of one or two volumes. It is here for what it
+costs, which is noise and not bias, and that is small:
 
 - **The noise it adds.** One time point's noise is 4 to 5.5% of F0 (median over ROIs). The
   variance of a response R read from one time point is about σ²(1 + (1 + R)² / n) with n
@@ -128,18 +131,18 @@ noise and not bias, and that is small:
   trials would trade this noise for a bias.
 - **No bias.** After a response over 0.5, F0 over all of a trial's time points is within
   0.4% (median; +3% at the 90th percentile) of F0 over its last two. The last two time
-  points of the block before are within 0.2% (median; 0.6% after a response over 0.5) of
-  the next trial's F0, with a spread (4.9 to 6.6%) a little over what noise alone would give
-  (4.2 to 5.0%): the response before has decayed by the end of its block, but assuming so
-  buys only two more time points, and none for the first trial.
+  points before a trial's start are within 0.2% (median; 0.6% after a response over 0.5) of
+  that trial's F0, with a spread (4.9 to 6.6%) a little over what noise alone would give
+  (4.2 to 5.0%): the response before has mostly decayed by then, but assuming so buys only
+  two more time points, and none for the first trial.
 
-*If more precision is ever wanted:* image one or two more volumes before each odor (the
-term is 1 / n). Nothing in analysis is worth doing. The 7 to 8% and 11 to 16% above come
-from an F0 smoothed over neighbouring trials, which assumes F0's scale does not jump from
-one block to the next. It can (the scope is off between blocks: drift in z, motion,
-bleaching and its recovery), and it does: for a tenth of the ROIs, F0's variance between
-successive trials is over 3× what its noise would give. Those medians are over ROIs whose
-F0 is mostly steady; where it jumps, a smoothed F0 is wrong by the jump.
+*If more precision is ever wanted:* a longer `pre_pulse_us`, for one or two more volumes
+before each odor (the term is 1 / n). Nothing in analysis is worth doing. The 7 to 8% and
+11 to 16% above come from an F0 smoothed over neighbouring trials, which assumes F0's scale
+does not jump from one trial to the next. It can (drift in z, motion, what is left of the
+response before), and it does: for a tenth of the ROIs, F0's variance between successive
+trials is over 3× what its noise would give. Those medians are over ROIs whose F0 is mostly
+steady; where it jumps, a smoothed F0 is wrong by the jump.
 
 ## 5. The ±peak statistic is biased away from zero
 
@@ -162,9 +165,14 @@ same statistic on time points without odor.
 their trial, 86 to 95% peak in the first two time points from onset and 3 to 9% later than
 the third; for 4 to 10% of them the first two hold under 80% of the peak.
 
-The comment there asks for the window in seconds: two volumes are 3.0 s in the 2023-05-08
-fly (0.67 volumes/s) and 4.5 s in the two later ones (0.44 volumes/s, 11 planes), by their
-`Experiment.xml`. With the slower volumes, more peaks fall in the first time point.
+The comment there asks for the window in seconds. The odor pulse is 3.0 s (the stimulus'
+`pulse_us`, and the valve's signal in ThorSync). Two volumes are 3.0 s in the 2023-05-08
+fly (0.67 volumes/s), so the pulse reaches into a third volume there whenever it begins
+after the first odor volume has (the first odor volume being the first whose middle is
+after the onset): the window then leaves out a volume with odor in it. In the two later
+flies two volumes are 4.5 s (0.44 volumes/s, 11 planes), and always hold the pulse. With
+the slower volumes, more peaks fall in the first time point. A pulse longer than about
+3.4 s could outlast the window at the slower rate too.
 
 ## 7. The plane is chosen by the responses then reported
 
@@ -222,7 +230,7 @@ changes exactly these later, under a TODO to correct `odor2abbrev` instead.
 | F0 over all of them against the last two, after a response over 0.5 (median; 90th percentile) | −0.2%; +2.8% | −0.3%; +2.8% | −0.4%; +3.2% |
 | Noise of one time point, of F0 (median over ROIs) | 4.1% | 4.6% | 5.5% |
 | Variance of F0 over what its noise would give: between successive trials; over a recording | 1.6×; 4.1× | 1.4×; 2.2× | 1.5×; 2.0× |
-| The last two time points of the block before, against the next F0 (median; after a response over 0.5) | −0.1%; −0.5% | −0.1%; −0.6% | −0.2%; −0.6% |
+| The last two time points before a trial's start, against its F0 (median; after a response over 0.5) | −0.1%; −0.5% | −0.1%; −0.6% | −0.2%; −0.6% |
 | S.d. of a response between repeats: own F0; median F0 of 5 trials; own subtracted, median divided by | 0.069; 0.056; 0.060 | 0.102; 0.087; 0.093 | 0.120; 0.100; 0.103 |
 | No odor: ±peak of two time points (s.d.; mean magnitude) against their mean | 0.090; 0.063 against 0.058; 0.037 | too few time points | too few time points |
 

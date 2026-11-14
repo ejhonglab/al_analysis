@@ -28,9 +28,11 @@ hong2p's `ijroi_masks` / `ijroi2mask` / `rois2best_planes_only`), each with wher
 much it was measured to matter, and a possible fix. None is fixed yet. In short: an ROI's
 best plane is chosen separately in each recording, by one signed maximum, from the
 responses then reported; masks are half a pixel off ImageJ's and depend on the direction an
-outline was drawn in; F0 is the mean of 2 to 5 time points (deliberate, as imaging is
-triggered per trial: a small cost in noise, not a bug); the ±peak statistic is biased
-away from zero; the two-volume window misses some peaks; no background is subtracted; odor
+outline was drawn in; F0 is the mean of 2 to 5 time points (deliberate: every trial gets
+the 7 s before its odor that the first one has; a small cost in noise, not a bug); the
+±peak statistic is biased away from zero; the two-volume window misses some peaks, and at
+0.67 volumes/s can leave out a volume the 3 s pulse reaches into; no background is
+subtracted; odor
 abbreviations depend on hong2p's cache. Remind me of the items that bear on what I ask for
 whenever a request touches that code or interprets its outputs (response sizes, inhibition,
 comparisons across a fly's recordings), before doing the work. When one is fixed, update
