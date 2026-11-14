@@ -12,7 +12,9 @@ flies of `2p_data/analysis_intermediates`: 2023-05-08/1 (5 recordings, 100 outli
 The measuring was done with hong-data's `app/extract.py` (the odor response database's
 *Extract signals*), which reproduces this calculation exactly: for 9 recordings of 4 flies,
 every trace in `full_traces`, every plane chosen in `best_plane_traces` and every response
-in `ij_trial_df_cache` came out identical to the last bit. The scripts that made the numbers
+in `ij_trial_df_cache` came out identical to the last bit (where it differs from
+al_analysis otherwise, in labels and in what it takes and leaves undone, is the last
+section here). The scripts that made the numbers
 are `notes/trace_extraction_flaws.py` and `notes/trace_extraction_baseline.py` (finding 4)
 in hong-data (a copy of this note is beside them).
 
@@ -223,3 +225,75 @@ changes exactly these later, under a TODO to correct `odor2abbrev` instead.
 | The last two time points of the block before, against the next F0 (median; after a response over 0.5) | −0.1%; −0.5% | −0.1%; −0.6% | −0.2%; −0.6% |
 | S.d. of a response between repeats: own F0; median F0 of 5 trials; own subtracted, median divided by | 0.069; 0.056; 0.060 | 0.102; 0.087; 0.093 | 0.120; 0.100; 0.103 |
 | No odor: ±peak of two time points (s.d.; mean magnitude) against their mean | 0.090; 0.063 against 0.058; 0.037 | too few time points | too few time points |
+
+## Where hong-data's Extract signals differs from al_analysis
+
+With its default (each ROI's best plane, chosen in each recording), *Extract signals*
+(`app/extract.py`) gives al_analysis' numbers: every trace, every plane chosen and every
+response was identical, to the last bit, in the 9 recordings checked. It differs in what it
+labels them with, in which recordings and ROIs it takes, and in stopping where
+`ij_trial_df` does. So its tables can be put beside al_analysis' per recording, but they
+are not al_analysis' final outputs.
+
+### Labels
+
+- **Odor abbreviations** are hong2p's hardcoded ones, else the abbreviation in the
+  recording's own `trial_frames_and_odors.json`. al_analysis also uses hong2p's cache of
+  every YAML loaded on its computer (finding 9), so two labels of the 9 recordings differ:
+  `1-prop` for its `1-3ol`, and `PAA` for its `paa`.
+- **A panel** is as `get_panel` names it, for the names it knows. For any other recording
+  it is the folder's name less a number at its end, where `get_panel` gives None.
+- **`is_pair`** is always False. al_analysis sets it for grids of two odors'
+  concentrations (`is_pairgrid`).
+
+### Which recordings and ROIs
+
+- **A recording done again.** A folder `<name>_redo` is taken in place of `<name>`, whole.
+  al_analysis processes both, and later blanks, odor by odor, all but the last recording
+  of each of a panel's odors (`drop_redone_odors`), whatever the folders are called. So
+  where a redo repeated only some odors, the first recording's other odors are missing
+  here; and odors given again in a folder not named `_redo` are both kept here, as further
+  repeats in the fly's `responses.csv`.
+- **Every recording with a movie and its trials is taken**: each folder of the fly with
+  `mocorr.tif` (else `flipped.tif`, else `raw.tif`, as al_analysis) and
+  `trial_frames_and_odors.json`. What al_analysis leaves out is not left out: the flies
+  and dates it is not run on, recordings of one plane, and those it skips for having no
+  stimulus YAML or frames that could not be assigned to trials.
+- **The ROIs' file** is the recording's `RoiSet.zip`, else one in the fly's folder.
+  al_analysis keeps it in the fly's first (diagnostic) recording and links the other
+  recordings to that; it does not read one in the fly's folder.
+- **ROIs al_analysis' reader refuses are read**: rectangles, ovals and composite ROIs. An
+  ROI on no plane is left out, saying so, where al_analysis tries to read a plane from
+  its name.
+
+### What is not done
+
+- **Nothing after `ij_trial_df`**: merging ROIs across a fly's recordings
+  (`merge_rois_across_recordings`), dropping uncertain ROIs where there is a certain one
+  (`drop_superfluous_uncertain_rois`), blanking concentrations that are not a panel's final
+  ones and data with the wrong solvent (`setnull_*`), keeping only consensus odors and
+  glomeruli, and the means over trials and flies.
+- **`responses_glomeruli.csv`** has the ROIs the database's uploads accept (those of its
+  list of glomeruli, and names with `_t0`, `_t1`, ... where no other ROI is that
+  glomerulus), which is not al_analysis' certain ROIs (`is_ijroi_certain`).
+- **The fly's `responses.csv`** is a table al_analysis does not make: every recording's
+  trials one under another, repeats counted through a panel's recordings. Each recording's
+  own `responses.csv` is the one laid out as `ij_trial_df`.
+- **Its settings are al_analysis' current defaults, and fixed**: `sign_preserving_maxabs`
+  over 2 volumes, and all of a trial's time points before the odor as its baseline. Not
+  the mean of `-R`, z-scored traces, a median baseline, or one baseline per odor.
+- **suite2p's ROIs** are not extracted, only ImageJ's.
+
+### By choice
+
+- The three other ways to make one signal of an ROI's planes (its best plane of the whole
+  fly, all of its voxels, its planes weighted by their noise) are not al_analysis'. The
+  weighted one's `traces.csv` is of F relative to each plane's mean, not F.
+
+### Not checked
+
+- **Recordings with 8 or more time points before the odor.** F0 is summed there by numpy,
+  and in al_analysis by pandas, which may not add in the same order, so a last digit could
+  differ. Those checked had 2 to 5.
+- **Movies that are not 16-bit integers** were checked against al_analysis' steps written
+  out (hong-data's tests), not against its own outputs: all nine recordings were `uint16`.
