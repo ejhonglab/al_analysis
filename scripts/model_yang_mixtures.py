@@ -105,7 +105,7 @@ SHORT_MODEL_TUNE_KWS: List[ParamDict] = dict_seq_product(nonshared_model_kws,
 test_with_connectome_vs_uniform_apl: List[ParamDict] = [
     dict(weight_divisor=20),
     dict(one_row_per_claw=True, prat_claws=True),
-    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True),
+    dict(one_row_per_claw=True, prat_claws=True, prat_boutons=True, multibouton_claws='first'),
 ]
 # passing the CLI arg -O will use this instead of SHORT_MODEL_TUNE_KWS
 OLD_SHORT_MODEL_TUNE_KWS: List[ParamDict] = [
